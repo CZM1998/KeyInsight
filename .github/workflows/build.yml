@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: powershell
+        run: .\tools\build.ps1 -Version 0.0.0
+
+      - name: Self test
+        shell: powershell
+        run: |
+          $p = Start-Process -FilePath .\KeyInsight.exe -ArgumentList '--selftest' -Wait -PassThru
+          if (Test-Path .\selftest.log) { Get-Content .\selftest.log }
+          if ($p.ExitCode -ne 0) { throw "selftest failed: $($p.ExitCode)" }
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeyInsight-build
+          path: |
+            KeyInsight.exe
+            README.md
+            LICENSE

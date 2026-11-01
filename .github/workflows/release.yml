@@ -1,0 +1,75 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: powershell
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v', 'V')
+          "value=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Release version: $v"
+
+      - name: Build
+        shell: powershell
+        run: .\tools\build.ps1 -Version ${{ steps.version.outputs.value }}
+
+      - name: Self test
+        shell: powershell
+        run: |
+          $p = Start-Process -FilePath .\KeyInsight.exe -ArgumentList '--selftest' -Wait -PassThru
+          if (Test-Path .\selftest.log) { Get-Content .\selftest.log }
+          if ($p.ExitCode -ne 0) { throw "selftest failed: $($p.ExitCode)" }
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: powershell
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.value }}" "installer\KeyInsight.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+
+      - name: Build portable zip
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item KeyInsight.exe, README.md, LICENSE stage
+          Compress-Archive -Path stage\* `
+            -DestinationPath "KeyInsight-${{ steps.version.outputs.value }}-portable.zip" -Force
+
+      - name: Checksums
+        shell: powershell
+        run: |
+          $files = @(
+            (Get-Item "dist\KeyInsight-Setup-${{ steps.version.outputs.value }}.exe"),
+            (Get-Item "KeyInsight-${{ steps.version.outputs.value }}-portable.zip")
+          )
+          $lines = foreach ($f in $files) {
+            (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $f.Name
+          }
+          $lines | Set-Content "dist\sha256.txt" -Encoding ascii
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/KeyInsight-Setup-${{ steps.version.outputs.value }}.exe
+            KeyInsight-${{ steps.version.outputs.value }}-portable.zip
+            dist/sha256.txt
+          generate_release_notes: true

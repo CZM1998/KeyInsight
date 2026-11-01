@@ -1,0 +1,29 @@
+# Build output
+KeyInsight.exe
+VersionInfo.cs
+*.pdb
+*.obj
+dist/
+stage/
+
+# User data and logs
+data/
+*.kds
+*.kds.tmp
+*.kds.bak
+*.kds.corrupt
+KeyInsight.ini
+debounce.log
+mouse.log
+selftest.log
+screenshot.log
+error.log
+stats-error.log
+
+# Development artifacts
+shots/
+.vs/
+bin/
+obj/
+*.user
+.idea/
