@@ -1,6 +1,6 @@
 #define MyAppName "KeyInsight"
 #ifndef MyAppVersion
-  #define MyAppVersion "2.1.1"
+  #define MyAppVersion "2.1.2"
 #endif
 #define MyAppPublisher "CZM1998"
 #define MyAppURL "https://github.com/CZM1998/KeyInsight"

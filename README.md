@@ -19,7 +19,9 @@
 - **使用时间分析**：24 小时分布、星期 × 小时热力、最近 30 天趋势。
 - **应用统计**：按前台进程分组，只记录进程名，不记录窗口标题；支持 Top 键盘、Top 应用。
 - **防抖统计**：拦截总数、抖动率、按键/应用排行、实时拦截流、窗口大小切换。
-- **界面**：自绘深/浅色主题，跟随 Windows；窗口可拖动、缩放、最大化；圆角卡片、热力渐变。
+- **界面**：自绘深/浅色主题，跟随 Windows；窗口可拖动、缩放、最大化；键盘悬停使用自绘圆角卡片（次数/占比/抖动/应用），不再使用系统 Tooltip。
+- **趣味换算**：滚轮距离换算成楼层/操场/埃菲尔铁塔/珠峰；点击次数换算成连点分钟；侧键次数；累计按键换算成 10 万字小说。
+- **检查更新**：托盘菜单和设置页都能手动检查；启动后每 24 小时自动检查一次。
 - **数据管理**：按月保存、永久保留；按月删除、清空全部、导出 4 个 CSV；启动时自动检查 GitHub 更新。
 - **托盘**：双击打开面板；菜单可切换防抖、开机自启、检查更新、重新安装输入钩子、退出；关闭按钮只隐藏到托盘。
 
@@ -27,9 +29,9 @@
 |---|---|
 | ![健康](docs/screenshots/health-dark.png) | ![鼠标](docs/screenshots/mouse-dark.png) |
 
-| 键盘热力图 | 防抖统计 |
+| 键盘热力图 | 键盘悬停提示 |
 |---|---|
-| ![键盘](docs/screenshots/keyboard-dark.png) | ![防抖](docs/screenshots/debounce-dark.png) |
+| ![键盘](docs/screenshots/keyboard-dark.png) | ![悬停](docs/screenshots/keyboard-hover-dark.png) |
 
 ## 下载与安装
 
@@ -60,6 +62,14 @@
 - 每个键有 30 天抖动柱状图、本周 vs 上周趋势、首次/最近抖动日期和建议。
 - 红点来自实际被防抖吞掉的重复按下，不是估算。
 
+## 趣味换算
+
+- 鼠标滚轮：按「1 格 ≈ 3 cm」估算（约 3 行 × 1 cm），显示范围累计距离，并按距离给出楼层、400 米操场、埃菲尔铁塔、珠峰等参照。
+- 鼠标点击：按「每秒 2 次」估算连续点击需要多少分钟。
+- 侧键 4/5：换算成网页前进/后退次数。
+- 累计按键：按「每键 1 字符、10 万字/本」估算相当于写完多少本小说。
+- 这些只是趣味估算，不代表精确的物理距离或输入内容。
+
 ## 数据与隐私
 
 - 只记录：虚拟键码、按键次数、时间（日期/小时/分钟）、前台进程文件名、拦截次数、鼠标按键编号与滚轮格数。
@@ -72,7 +82,8 @@
 ## 自动更新
 
 - 每次启动后（最多每 24 小时一次）请求 GitHub Releases API 的最新版本。
-- 发现新版本时托盘气泡提示；点击气泡或托盘“检查更新”后下载 `KeyInsight-Setup-*.exe`。
+- 托盘菜单「检查更新」和设置页「关于与隐私 → 检查更新」都可以手动触发。
+- 发现新版本时托盘气泡提示；点击气泡或手动检查后下载 `KeyInsight-Setup-*.exe`。
 - 下载后会校验 `sha256.txt`，通过后弹出确认，运行 Inno Setup 静默安装并重启。
 - 安装版（`%LOCALAPPDATA%\Programs\KeyInsight`）可直接自动更新；便携版会被安装到用户目录，建议在 `KeyInsight.ini` 里设 `AutoCheckUpdates=0`，或继续使用便携包。
 - 自动更新默认开启，可在 `KeyInsight.ini` 中关闭：`AutoCheckUpdates=0`。
@@ -82,8 +93,8 @@
 需要 Windows 自带的 .NET Framework 4.8 和 `csc.exe`，不依赖 NuGet。
 
 ```powershell
-# 普通构建（版本 2.1.1）
-powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Version 2.1.1
+# 普通构建（版本 2.1.2）
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Version 2.1.2
 
 # 自检
 .\KeyInsight.exe --selftest
@@ -105,14 +116,14 @@ Get-Content selftest.log
 发布新版本：
 
 ```bash
-git tag v2.1.1
-git push origin v2.1.1
+git tag v2.1.2
+git push origin v2.1.2
 ```
 
 几分钟后 Releases 页面会出现：
 
-- `KeyInsight-Setup-2.1.1.exe`
-- `KeyInsight-2.1.1-portable.zip`
+- `KeyInsight-Setup-2.1.2.exe`
+- `KeyInsight-2.1.2-portable.zip`
 - `sha256.txt`
 
 自动更新读取的就是这些资产。

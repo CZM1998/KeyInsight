@@ -417,7 +417,8 @@ namespace KeyInsight
         {
             if (_form == null || _form.IsDisposed)
             {
-                _form = new DashboardForm(_stats, _cfg, _hook, _mouseHook);
+                _form = new DashboardForm(_stats, _cfg, _hook, _mouseHook,
+                    delegate { BeginUpdateCheck(true); });
             }
             _form.Show();
             if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;
@@ -690,7 +691,7 @@ namespace KeyInsight
                 cfg.ThresholdMs = 25;
                 cfg.SkipInjected = true;
 
-                form = new DashboardForm(engine, cfg, null, null);
+                form = new DashboardForm(engine, cfg, null, null, null);
                 form.ScreenshotMode = true;
                 form.ShowInTaskbar = false;
                 form.StartPosition = FormStartPosition.Manual;
@@ -720,6 +721,19 @@ namespace KeyInsight
                     }
                 }
 
+                Theme.ForceDark = null;
+                Theme.Refresh();
+
+                Theme.ForceDark = true;
+                Theme.Refresh();
+                form.ApplyTheme();
+                form.PreviewKeyboardHover("E");
+                using (Bitmap bmp = new Bitmap(form.Width, form.Height))
+                {
+                    form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
+                    bmp.Save(Path.Combine(outDir, "dark-keyboard-hover.png"), ImageFormat.Png);
+                }
+                form.PreviewKeyboardHover(null);
                 Theme.ForceDark = null;
                 Theme.Refresh();
 
@@ -819,7 +833,7 @@ namespace KeyInsight
                 DateTime date = DateTime.Today.AddDays(-d);
                 int n = perDay + rnd.Next(perDay);
                 if (demo) n = d == 0 ? (4000 + rnd.Next(2000)) : (700 + rnd.Next(1500));
-                int maxHour = d == 0 ? DateTime.Now.Hour : 23;
+                int maxHour = (demo || d != 0) ? 23 : DateTime.Now.Hour;
 
                 for (int i = 0; i < n; i++)
                 {
@@ -828,7 +842,7 @@ namespace KeyInsight
                     int second = rnd.Next(60);
                     DateTime at = new DateTime(date.Year, date.Month, date.Day, hour, minute, second)
                         .AddMilliseconds(rnd.Next(1000));
-                    if (at > DateTime.Now) at = DateTime.Now.AddMinutes(-rnd.Next(1, 60));
+                    if (!demo && at > DateTime.Now) at = DateTime.Now.AddMinutes(-rnd.Next(1, 60));
 
                     KeyEvent ev = new KeyEvent();
                     ev.Type = KeyEventType.Down;
@@ -856,7 +870,7 @@ namespace KeyInsight
                     int hour = PickHour(rnd, maxHour);
                     DateTime at = new DateTime(date.Year, date.Month, date.Day, hour, rnd.Next(60), rnd.Next(60))
                         .AddMilliseconds(rnd.Next(1000));
-                    if (at > DateTime.Now) at = DateTime.Now.AddMinutes(-rnd.Next(1, 60));
+                    if (!demo && at > DateTime.Now) at = DateTime.Now.AddMinutes(-rnd.Next(1, 60));
 
                     int button = Pick(MouseButtonValues, MouseButtonWeights, rnd);
                     KeyEvent me = new KeyEvent();

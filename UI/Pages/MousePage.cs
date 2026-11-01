@@ -66,22 +66,63 @@ namespace KeyInsight.UI.Pages
 
             int bottomY = contentY + midH + gap;
             int bottomH = Height - bottomY;
-            SectionCard(g, new Rectangle(0, bottomY, Width, bottomH), "Top 应用（鼠标点击）", "按前台应用统计点击与滚轮");
+            int appsW = (int)(Width * 0.58);
+            int funW = Width - appsW - gap;
+
+            SectionCard(g, new Rectangle(0, bottomY, appsW, bottomH), "Top 应用（鼠标点击）", "按前台应用统计点击与滚轮");
             List<RankRow> apps = AppRows(Snap.Range.Apps);
             if (apps.Count == 0)
             {
                 Ui.TextCenter(g, "这个范围内还没有应用数据", Ui.BodySmall, p.Dim,
-                    new Rectangle(18, bottomY + 80, Width - 36, 40));
+                    new Rectangle(18, bottomY + 80, appsW - 36, 40));
             }
             else
             {
-                Charts.DrawRankList(g, new Rectangle(18, bottomY + 58, Width - 36, bottomH - 96),
+                Charts.DrawRankList(g, new Rectangle(18, bottomY + 58, appsW - 36, bottomH - 96),
                     apps, p, Ui.BodySmall);
             }
-
             Ui.TextLeftEllipsis(g,
-                "Windows 只向应用暴露 5 个鼠标按键（左/右/中/侧键 4/5）；更多侧键若被厂商驱动映射为键盘键，会出现在键盘热力图里。",
-                Ui.Label, p.Dim, new Rectangle(18, bottomY + bottomH - 24, Width - 36, 18));
+                "Windows 只暴露 5 个鼠标键；更多侧键见键盘热力图。",
+                Ui.Label, p.Dim, new Rectangle(18, bottomY + bottomH - 24, appsW - 36, 18));
+
+            SectionCard(g, new Rectangle(appsW + gap, bottomY, funW, bottomH), "趣味换算", "按 1 格滚轮 ≈ 3 cm 估算");
+            DrawFun(g, new Rectangle(appsW + gap + 18, bottomY + 56, funW - 36, bottomH - 70), p);
+        }
+
+        private void DrawFun(Graphics g, Rectangle r, Palette p)
+        {
+            long ticks = WheelSum(Snap.Range.Mouse);
+            double meters = ticks * 0.03;
+            string distance = meters >= 1000
+                ? (meters / 1000.0).ToString("F1") + " km"
+                : meters.ToString("F1") + " m";
+            string scrollSub;
+            if (ticks <= 0) scrollSub = "还没有滚轮数据";
+            else if (meters < 100) scrollSub = "≈ 爬 " + Math.Max(1, (int)Math.Round(meters / 3.0)) + " 层楼";
+            else if (meters < 1000) scrollSub = "≈ " + (meters / 400.0).ToString("F2") + " 个 400 米操场";
+            else if (meters < 10000) scrollSub = "≈ " + (meters / 330.0).ToString("F1") + " 个埃菲尔铁塔";
+            else scrollSub = "≈ 珠峰的 " + (meters / 8848.0 * 100).ToString("F1") + "%";
+
+            long clicks = 0;
+            for (int b = 1; b <= 5; b++) clicks += Count(Snap.Range.Mouse, b);
+            long side = Count(Snap.Range.Mouse, MouseIds.Back) + Count(Snap.Range.Mouse, MouseIds.Forward);
+
+            int rowH = 36;
+            DrawFunRow(g, new Rectangle(r.X, r.Y, r.Width, rowH), p,
+                "滚轮距离", distance, scrollSub);
+            DrawFunRow(g, new Rectangle(r.X, r.Y + rowH, r.Width, rowH), p,
+                "鼠标点击", Charts.Number(clicks) + " 次",
+                clicks > 0 ? "≈ 每秒 2 次连点 " + Math.Max(1, (int)Math.Round(clicks / 120.0)) + " 分钟" : "还没有点击数据");
+            DrawFunRow(g, new Rectangle(r.X, r.Y + rowH * 2, r.Width, rowH), p,
+                "侧键 4/5", Charts.Number(side) + " 次",
+                side > 0 ? "≈ " + Charts.Number(side) + " 次网页前进/后退" : "还没有侧键数据");
+        }
+
+        private static void DrawFunRow(Graphics g, Rectangle r, Palette p, string label, string value, string sub)
+        {
+            Ui.TextLeft(g, label, Ui.BodySmall, p.Muted, new Rectangle(r.X, r.Y, r.Width - 130, 20));
+            Ui.TextRight(g, value, Ui.Section, p.Text, new Rectangle(r.Right - 150, r.Y, 150, 20));
+            Ui.TextLeftEllipsis(g, sub, Ui.Label, p.Dim, new Rectangle(r.X, r.Y + 18, r.Width, 16));
         }
 
         private void DrawMouse(Graphics g, Rectangle r, Dictionary<int, long> mouse, Palette p)

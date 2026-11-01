@@ -21,6 +21,8 @@ namespace KeyInsight.UI.Pages
         private Rectangle _exportRect;
         private Rectangle _clearRect;
         private Rectangle _manageRect;
+        private Rectangle _checkUpdateRect;
+        private Rectangle _autoUpdateRect;
         private Rectangle[] _monthDeleteRects = new Rectangle[0];
         private string[] _monthKeys = new string[0];
         private static readonly int[] Windows = new int[] { 10, 15, 20, 25, 30 };
@@ -181,7 +183,15 @@ namespace KeyInsight.UI.Pages
             Ui.TextLeft(g, "数据全部保存在本机，你可以按月删除，或点「清空全部数据」彻底清除。",
                 Ui.BodySmall, p.Muted, new Rectangle(card.X + 18, card.Y + 74, card.Width - 36, 22));
             Ui.TextLeft(g, "KeyInsight v" + AppInfo.Version + " · 防抖基于 WH_KEYBOARD_LL · 使用前行者 X87S 实测校准",
-                Ui.Label, p.Dim, new Rectangle(card.X + 18, card.Bottom - 30, card.Width - 36, 18));
+                Ui.Label, p.Dim, new Rectangle(card.X + 18, card.Bottom - 30, card.Width - 200, 18));
+
+            _autoUpdateRect = new Rectangle(card.Right - 188, card.Bottom - 42, 40, 22);
+            Charts.Switch(g, _autoUpdateRect, _shell.AutoCheckUpdates, p);
+            Ui.TextLeft(g, "自动检查更新", Ui.BodySmall, p.Muted,
+                new Rectangle(card.Right - 300, card.Bottom - 40, 108, 20));
+
+            _checkUpdateRect = new Rectangle(card.Right - 140, card.Bottom - 44, 104, 28);
+            Charts.Button(g, _checkUpdateRect, "检查更新", false, p);
         }
 
         private static string FormatSize(long bytes)
@@ -195,6 +205,18 @@ namespace KeyInsight.UI.Pages
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
+
+            if (_checkUpdateRect.Contains(e.Location))
+            {
+                _shell.CheckUpdates();
+                return;
+            }
+            if (_autoUpdateRect.Contains(e.Location))
+            {
+                _shell.AutoCheckUpdates = !_shell.AutoCheckUpdates;
+                Invalidate();
+                return;
+            }
 
             if (_switchDebounce.Contains(e.Location))
             {

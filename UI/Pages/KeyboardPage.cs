@@ -15,7 +15,6 @@ namespace KeyInsight.UI.Pages
         private Rectangle[] _layoutRects = new Rectangle[0];
         private Dictionary<KeyDef, RectangleF> _hits = new Dictionary<KeyDef, RectangleF>();
         private KeyDef _hover;
-        private readonly ToolTip _tip = new ToolTip();
 
         public override string Title { get { return "键盘热力图"; } }
         public override string Subtitle { get { return "每个按键的使用次数，颜色越深代表使用越多"; } }
@@ -23,9 +22,6 @@ namespace KeyInsight.UI.Pages
         public KeyboardPage(IShellActions shell)
         {
             _shell = shell;
-            _tip.InitialDelay = 150;
-            _tip.ReshowDelay = 60;
-            _tip.AutoPopDelay = 6000;
             Range = RangeKind.Week;
         }
 
@@ -115,6 +111,8 @@ namespace KeyInsight.UI.Pages
                 used + " / " + layout.KeyCount, "至少按下一次", p.Accent3);
             Charts.StatCard(g, new Rectangle((cardW + gap) * 3, sy, cardW, statsH), p, "拦截次数",
                 Charts.Number(swallowed), "该范围内的抖动", p.Bad);
+
+            DrawHoverTip(g);
         }
 
         private void DrawLayoutChips(Graphics g, int y)
@@ -199,11 +197,29 @@ namespace KeyInsight.UI.Pages
             }
         }
 
+        public void PreviewHover(string label)
+        {
+            if (label == null)
+            {
+                _hover = null;
+                Invalidate();
+                return;
+            }
+            foreach (KeyDef key in KeyLayout.Layout108.Keys)
+            {
+                if (key.Label == label)
+                {
+                    _hover = key;
+                    Invalidate();
+                    return;
+                }
+            }
+        }
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button != MouseButtons.Left) return;
-            if (HandleRangeClick(e.Location)) return;
+            if (e.Button != MouseButtons.Left) return;            if (HandleRangeClick(e.Location)) return;
 
             int li = HitRects(e.Location, _layoutRects);
             if (li >= 0)
@@ -236,23 +252,6 @@ namespace KeyInsight.UI.Pages
             {
                 _hover = found;
                 Invalidate();
-                if (found != null)
-                {
-                    Dictionary<int, KeyAgg> counts = _appFilter == null
-                        ? (Snap == null ? null : Snap.Range.Keys)
-                        : (Snap == null || !Snap.Range.Apps.ContainsKey(_appFilter) ? null : Snap.Range.Apps[_appFilter].Keys);
-                    long n = KeyLayout.CountFor(found, counts);
-                    long sw = KeyLayout.SwallowedFor(found, counts);
-                    long total = _appFilter == null ? (Snap == null ? 0 : Snap.Range.Total) : (Snap != null && Snap.Range.Apps.ContainsKey(_appFilter) ? Snap.Range.Apps[_appFilter].Total : 0);
-                    double share = total > 0 ? (n * 100.0 / total) : 0;
-                    string text = found.Label + "\n" + Charts.Number(n) + " 次 · 占比 " + share.ToString("F1") + "%";
-                    if (sw > 0) text += "\n拦截 " + Charts.Number(sw) + " 次";
-                    _tip.Show(text, this, e.X + 14, e.Y + 18, 5000);
-                }
-                else
-                {
-                    _tip.Hide(this);
-                }
             }
         }
 
@@ -262,9 +261,79 @@ namespace KeyInsight.UI.Pages
             if (_hover != null)
             {
                 _hover = null;
-                _tip.Hide(this);
                 Invalidate();
             }
+        }
+
+        private void DrawHoverTip(Graphics g)
+        {
+            if (_hover == null || Snap == null) return;
+            RectangleF keyRect;
+            if (!_hits.TryGetValue(_hover, out keyRect)) return;
+
+            Dictionary<int, KeyAgg> counts = CurrentCounts();
+            long n = KeyLayout.CountFor(_hover, counts);
+            long sw = KeyLayout.SwallowedFor(_hover, counts);
+            long total = CurrentTotal();
+            double share = total > 0 ? n * 100.0 / total : 0;
+            Palette p = Theme.P;
+
+            int w = 214;
+            int h = 116;
+            int x = (int)keyRect.Right + 12;
+            if (x + w > Width - 8) x = (int)keyRect.Left - w - 12;
+            if (x < 8) x = 8;
+            int y = (int)keyRect.Top - 10;
+            if (y + h > Height - 8) y = Height - h - 8;
+            if (y < 8) y = 8;
+            Rectangle r = new Rectangle(x, y, w, h);
+
+            Ui.FillRound(g, new Rectangle(r.X + 3, r.Y + 5, w, h), 12, Color.FromArgb(80, 0, 0, 0));
+            Ui.FillRound(g, r, 12, p.Card);
+            Ui.StrokeRound(g, r, 12, p.BorderStrong);
+
+            Rectangle accentRect = new Rectangle(r.X + 14, r.Y + 10, w - 28, 3);
+            using (System.Drawing.Drawing2D.GraphicsPath accent = Ui.RoundRect(accentRect, 1.5f))
+            using (System.Drawing.Drawing2D.LinearGradientBrush b =
+                new System.Drawing.Drawing2D.LinearGradientBrush(accentRect, p.Accent1, p.Accent3, 0f))
+            {
+                g.FillPath(b, accent);
+            }
+
+            Ui.TextLeft(g, _hover.Label, Ui.Section, p.Text,
+                new Rectangle(r.X + 14, r.Y + 18, 120, 24));
+            Ui.TextRight(g, share.ToString("F1") + "%", Ui.BodySmall, p.Muted,
+                new Rectangle(r.Right - 76, r.Y + 18, 62, 24));
+            Ui.TextLeft(g, Charts.Number(n) + " 次", Ui.CardValueSmall, p.Text,
+                new Rectangle(r.X + 14, r.Y + 40, 150, 26));
+            Ui.TextLeft(g, _appFilter == null ? "全部应用" : AppNames.Display(_appFilter),
+                Ui.Label, p.Dim, new Rectangle(r.X + 14, r.Y + 66, w - 28, 16));
+            Ui.Divider(g, r.X + 14, r.Y + 86, w - 28, p);
+
+            Color sc = sw > 0 ? p.Bad : p.Good;
+            Ui.DrawDot(g, r.X + 19, r.Y + 100, 4, sc);
+            Ui.TextLeft(g, sw > 0 ? "抖动拦截" : "未出现抖动", Ui.BodySmall, p.Muted,
+                new Rectangle(r.X + 28, r.Y + 90, 110, 20));
+            Ui.TextRight(g, Charts.Number(sw) + " 次", Ui.Label, sc,
+                new Rectangle(r.Right - 80, r.Y + 90, 66, 20));
+        }
+
+        private Dictionary<int, KeyAgg> CurrentCounts()
+        {
+            if (Snap == null) return null;
+            if (_appFilter == null) return Snap.Range.Keys;
+            AppAgg app;
+            if (Snap.Range.Apps.TryGetValue(_appFilter, out app)) return app.Keys;
+            return null;
+        }
+
+        private long CurrentTotal()
+        {
+            if (Snap == null) return 0;
+            if (_appFilter == null) return Snap.Range.Total;
+            AppAgg app;
+            if (Snap.Range.Apps.TryGetValue(_appFilter, out app)) return app.Total;
+            return 0;
         }
     }
 }

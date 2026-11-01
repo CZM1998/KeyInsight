@@ -26,6 +26,7 @@ namespace KeyInsight.UI
         private readonly Config _cfg;
         private readonly DebounceHook _hook;
         private readonly MouseHook _mouseHook;
+        private readonly Action _checkUpdates;
         private readonly PageBase[] _pages;
         private readonly string[] _navLabels = new string[] { "总览", "键盘热力图", "鼠标统计", "应用统计", "时间分析", "按键健康", "防抖统计", "设置与数据" };
         private readonly string[] _navGlyphs = new string[] { "\uE80F", "\uE765", "\uE962", "\uE71D", "\uE823", "\uE95E", "\uE7BA", "\uE713" };
@@ -46,12 +47,13 @@ namespace KeyInsight.UI
 
         public bool ScreenshotMode;
 
-        public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook)
+        public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook, Action checkUpdates)
         {
             _source = source;
             _cfg = cfg;
             _hook = hook;
             _mouseHook = mouseHook;
+            _checkUpdates = checkUpdates;
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
@@ -104,6 +106,17 @@ namespace KeyInsight.UI
         {
             get { return AutoStartHelper.IsEnabled(); }
             set { AutoStartHelper.Set(value); }
+        }
+
+        public bool AutoCheckUpdates
+        {
+            get { return _cfg.AutoCheckUpdates; }
+            set { _cfg.AutoCheckUpdates = value; _cfg.Save(); }
+        }
+
+        public void CheckUpdates()
+        {
+            if (_checkUpdates != null) _checkUpdates();
         }
 
         public void SetEnabled(bool on)
@@ -161,6 +174,15 @@ namespace KeyInsight.UI
             for (int i = 0; i < _pages.Length; i++) _pages[i].Visible = i == index;
             RefreshSnapshot();
             Invalidate();
+        }
+
+        public void PreviewKeyboardHover(string label)
+        {
+            KeyboardPage page = _pages[1] as KeyboardPage;
+            if (page == null) return;
+            SelectPage(1);
+            page.PreviewHover(label);
+            Application.DoEvents();
         }
 
         public void ApplyTheme()

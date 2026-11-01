@@ -26,8 +26,9 @@ namespace KeyInsight.UI.Pages
             if (Snap.Today.Mouse != null) foreach (long v in Snap.Today.Mouse.Values) mouseToday += v;
 
             double rate = Snap.Today.Swallowed / (double)Math.Max(1, Snap.Today.Total + Snap.Today.Swallowed);
+            double books = Snap.TotalAll / 100000.0;
             Charts.StatCard(g, new Rectangle(0, y, cardW, cardH), p, "今日按键", Charts.Number(Snap.Today.Total),
-                "活跃 " + Snap.Today.ActiveMinutes + " 分钟 · 峰值 " + Charts.Number(Snap.Today.KpmPeak) + " KPM", p.Accent1);
+                Snap.Today.ActiveMinutes + " 分钟 · 峰值 " + Charts.Number(Snap.Today.KpmPeak) + " KPM", p.Accent1);
             Charts.StatCard(g, new Rectangle(cardW + gap, y, cardW, cardH), p, "今日鼠标",
                 Charts.Number(mouseToday), "左/右/中/侧键 + 滚轮", p.Info);
             Charts.StatCard(g, new Rectangle((cardW + gap) * 2, y, cardW, cardH), p, "今日拦截", Charts.Number(Snap.Today.Swallowed),
@@ -36,7 +37,7 @@ namespace KeyInsight.UI.Pages
                 Charts.Number(Math.Round(Snap.Today.KpmAverage)),
                 "最近 1 分钟 " + Charts.Number(Snap.KpmNow) + " KPM", p.Accent2);
             Charts.StatCard(g, new Rectangle((cardW + gap) * 4, y, cardW, cardH), p, "累计按键",
-                Charts.Number(Snap.TotalAll), "累计拦截 " + Charts.Number(Snap.SwallowedAll), p.Accent3);
+                Charts.Number(Snap.TotalAll), "≈ 写完 " + books.ToString("F1") + " 本 10 万字小说", p.Accent3);
 
             int top = y + cardH + gap;
             int leftW = (int)(Width * 0.63);
