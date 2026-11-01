@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -77,7 +78,8 @@ namespace KeyInsight.Update
             info.Tag = tag;
             info.ReleaseUrl = root.ContainsKey("html_url") ? root["html_url"] as string : null;
 
-            object[] assets = root.ContainsKey("assets") ? root["assets"] as object[] : null;
+            object assetsObject = root.ContainsKey("assets") ? root["assets"] : null;
+            IEnumerable assets = assetsObject as IEnumerable;
             if (assets != null)
             {
                 foreach (object asset in assets)

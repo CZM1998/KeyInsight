@@ -82,8 +82,8 @@
 需要 Windows 自带的 .NET Framework 4.8 和 `csc.exe`，不依赖 NuGet。
 
 ```powershell
-# 普通构建（版本 2.1.0）
-powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Version 2.1.0
+# 普通构建（版本 2.1.1）
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Version 2.1.1
 
 # 自检
 .\KeyInsight.exe --selftest
@@ -105,14 +105,14 @@ Get-Content selftest.log
 发布新版本：
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0
+git tag v2.1.1
+git push origin v2.1.1
 ```
 
 几分钟后 Releases 页面会出现：
 
-- `KeyInsight-Setup-2.1.0.exe`
-- `KeyInsight-2.1.0-portable.zip`
+- `KeyInsight-Setup-2.1.1.exe`
+- `KeyInsight-2.1.1-portable.zip`
 - `sha256.txt`
 
 自动更新读取的就是这些资产。
