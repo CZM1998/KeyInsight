@@ -93,8 +93,11 @@
 需要 Windows 自带的 .NET Framework 4.8 和 `csc.exe`，不依赖 NuGet。
 
 ```powershell
-# 普通构建（版本 2.1.2）
-powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Version 2.1.2
+# 普通构建（版本 2.2.0）
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Version 2.2.0
+
+# 核心/存储测试（独立测试 exe，不参与主程序打包）
+powershell -ExecutionPolicy Bypass -File tools\test.ps1 -Suite All
 
 # 自检
 .\KeyInsight.exe --selftest
@@ -102,9 +105,24 @@ Get-Content selftest.log
 
 # 生成深/浅色页面截图
 .\KeyInsight.exe --screenshot shots
+
+# 可选：把便携数据迁移到安装目录布局（%LOCALAPPDATA%\KeyInsight，含备份清单与哈希校验）
+.\KeyInsight.exe --migrate-data
 ```
 
 `tools\build.ps1` 会生成 `VersionInfo.cs` 并把版本写入 exe；`Assets\app.ico` 和 `app256.png` 由 `tools\make-icon.ps1` 从 `Assets\icon-source.png` 生成。
+
+### 目录结构（v2.2+）
+
+```text
+Core/       纯逻辑层（键身份、策略引擎、状态机、遥测队列、异步日志）
+Stats/      KDS1 存储、聚合、侧车（用量/诊断/快捷键）、迁移与周报
+Tests/      独立测试（Core/Storage/Telemetry 套件；build.ps1 自动排除）
+data/       KDS1 月份文件（格式冻结）；data/v2、data/diagnostics 为新增侧车
+```
+
+测试基线：78 项确定性测试（黄金轨迹、KSM-001~020、LEG-001 差分、KDS1/CSV 快照、TEL/STO 系列）。
+重新基线化 CSV 快照：设置环境变量 `KI_UPDATE_GOLDEN=1` 运行 `tools\test.ps1 -Suite Storage`。
 
 ## CI / 自动打包与发布
 

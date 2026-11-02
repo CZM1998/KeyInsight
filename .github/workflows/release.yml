@@ -26,6 +26,10 @@ jobs:
         shell: powershell
         run: .\tools\build.ps1 -Version ${{ steps.version.outputs.value }}
 
+      - name: Core and storage tests
+        shell: powershell
+        run: .\tools\test.ps1 -Suite All
+
       - name: Self test
         shell: powershell
         run: |

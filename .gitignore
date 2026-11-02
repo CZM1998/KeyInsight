@@ -27,3 +27,6 @@ bin/
 obj/
 *.user
 .idea/
+
+# Test artifacts
+artifacts/

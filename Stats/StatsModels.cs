@@ -8,7 +8,11 @@ namespace KeyInsight.Stats
         Down = 1,
         Swallow = 2,
         MouseDown = 3,
-        MouseWheel = 4
+        MouseWheel = 4,
+        // P2-04：快捷键组合聚合（App 字段携带组合名，如 "ctrl+c"）；不进入 KDS1 统计
+        Shortcut = 5,
+        // P2-03：滚轮原始 delta（高分辨率滚动保留；旧 MB 格口口径不变）
+        WheelRaw = 6
     }
 
     public struct KeyEvent
@@ -98,6 +102,53 @@ namespace KeyInsight.Stats
         public Dictionary<int, KeyAgg> Keys = new Dictionary<int, KeyAgg>();
         public Dictionary<string, AppAgg> Apps = new Dictionary<string, AppAgg>(StringComparer.OrdinalIgnoreCase);
         public Dictionary<int, long> Mouse = new Dictionary<int, long>();
+        // V2 口径（不入 KDS1，仅侧车持久化）：鼠标活跃分钟位图；旧数据加载后保持全 false
+        public bool[] MouseMinutes = new bool[1440];
+        // V2 口径：滚轮原始 delta 累计与事件数（高分辨率滚轮保留小步滚动）
+        public long RawWheelDelta;
+        public long RawWheelEvents;
+    }
+
+    /// <summary>
+    /// 拦截间隔直方图（P1-02/P2-01）：按日按 VK 聚合，桶边界（毫秒）固定为
+    /// [0,1),[1,2),[2,5),[5,10),[10,15),[15,20),[20,25),[25,30),[30,40),[40,60),[60,∞)。
+    /// 仅存聚合摘要，不存原始事件序列（隐私约束）。
+    /// </summary>
+    public sealed class SwallowGapHist
+    {
+        public const int BucketCount = 11;
+
+        public static readonly double[] BucketEdges = new double[]
+        {
+            1, 2, 5, 10, 15, 20, 25, 30, 40, 60
+        };
+
+        public long[] GapDown = new long[BucketCount];
+        public long[] GapShortUp = new long[BucketCount];
+        public long Count;
+
+        public static int BucketOf(double ms)
+        {
+            for (int i = 0; i < BucketEdges.Length; i++)
+            {
+                if (ms < BucketEdges[i]) return i;
+            }
+            return BucketCount - 1;
+        }
+
+        /// <summary>桶的上边界（毫秒）；末桶返回 long.MaxValue。</summary>
+        public static long BucketUpper(int bucket)
+        {
+            if (bucket < 0 || bucket >= BucketEdges.Length) return long.MaxValue;
+            return (long)BucketEdges[bucket];
+        }
+
+        public void Add(double gapDown, double gapShortUp)
+        {
+            GapDown[BucketOf(gapDown)]++;
+            GapShortUp[BucketOf(gapShortUp)]++;
+            Count++;
+        }
     }
 
     public sealed class MonthData
@@ -215,6 +266,15 @@ namespace KeyInsight.Stats
         public Dictionary<int, int[]> KeySwallowTrend = new Dictionary<int, int[]>();
         public Dictionary<int, int[]> KeyPressTrend = new Dictionary<int, int[]>();
         public DateTime KeyTrendStart;
+        // V2 附加（P1-02+）：本聚合范围内按 VK 的拦截间隔直方图（30 天窗口），供离线策略模拟与画像
+        public Dictionary<int, SwallowGapHist> GapHistograms = new Dictionary<int, SwallowGapHist>();
+        // P2-04：常用快捷键聚合（组合名 -> 次数），仅聚合不存序列
+        public List<KeyValuePair<string, long>> TopShortcuts = new List<KeyValuePair<string, long>>();
+        // P2-04：综合活跃分钟（键盘∪鼠标，按日求和；无鼠标位图的旧数据按键盘口径）
+        public int CombinedActiveMinutes;
+        // P2-03：范围内滚轮原始 delta 与事件数（V2 口径）
+        public long RawWheelDeltaTotal;
+        public long RawWheelEventsTotal;
     }
 
     public interface IStatsSource

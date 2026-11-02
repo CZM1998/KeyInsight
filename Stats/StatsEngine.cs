@@ -29,9 +29,44 @@ namespace KeyInsight.Stats
         private volatile bool _allLoaded;
         private int _minuteDay;
         private long _version;
+        // P1-02/P2-01：日 -> (vk -> 间隔直方图)；随月份保存到诊断侧车
+        private readonly Dictionary<int, Dictionary<int, SwallowGapHist>> _gapHist =
+            new Dictionary<int, Dictionary<int, SwallowGapHist>>();
+        // P2-04：快捷键聚合（组合名 -> 次数），内存聚合 + 侧车持久化
+        private readonly Dictionary<string, long> _shortcutCounts = new Dictionary<string, long>();
+
+        /// <summary>诊断数据（拦截间隔直方图）采集开关：关闭后不再记录候选间隔聚合（V2 侧车）。</summary>
+        public volatile bool DiagnosticsEnabled = true;
+        private int _applyCounter;
+
+        /// <summary>当前事件队列积压深度（诊断用）。</summary>
+        public int PendingEvents { get { return _queue.Count; } }
+
+        /// <summary>数据版本（每次 Apply 递增；UI 用于节流/过期判断）。</summary>
+        public long DataVersion { get { return Interlocked.Read(ref _version); } }
+
+        private static double TicksToMsLocal(long ticks)
+        {
+            return ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        }
 
         private List<MonthInfo> _monthCache;
         private DateTime _monthCacheAt = DateTime.MinValue;
+
+        // PR-1：异步快照请求（合并 + generation + 缓存）。构建在 worker 线程完成，
+        // UI 线程不再同步执行完整 GetSnapshot。
+        private readonly object _reqGate = new object();
+        private bool _reqPending;
+        private DateTime _reqStart;
+        private DateTime _reqEnd;
+        private long _reqGeneration;
+        private long _reqCounter;
+        private readonly Dictionary<string, StatsSnapshot> _snapCache =
+            new Dictionary<string, StatsSnapshot>(StringComparer.Ordinal);
+        private readonly List<string> _snapCacheOrder = new List<string>();
+
+        /// <summary>快照构建完成回调（worker 线程调用；UI 侧需 Post 回 UI 线程）。</summary>
+        public Action<StatsSnapshot, long> SnapshotBuilt;
 
         public string DataDirectory { get { return _dataDir; } }
 
@@ -44,6 +79,7 @@ namespace KeyInsight.Stats
             if (!Directory.Exists(_dataDir)) Directory.CreateDirectory(_dataDir);
 
             LoadCurrentMonth(DateTime.Now);
+            LoadSidecars(DateTime.Now);
 
             _worker = new Thread(Worker);
             _worker.IsBackground = true;
@@ -51,6 +87,47 @@ namespace KeyInsight.Stats
             _worker.Start();
 
             ThreadPool.QueueUserWorkItem(delegate { LoadAllMonths(); });
+        }
+
+        /// <summary>加载 V2 侧车（诊断直方图 + 快捷键聚合）。KDS1 永远是唯一权威统计源。</summary>
+        private void LoadSidecars(DateTime at)
+        {
+            // 诊断直方图按月分文件；全部加载（仅聚合摘要，体量有界），供跨重启的 30 天模拟
+            try
+            {
+                string diagDir = Path.Combine(_dataDir, "diagnostics");
+                if (Directory.Exists(diagDir))
+                {
+                    foreach (string file in Directory.GetFiles(diagDir, "kdiag-*.jsonl"))
+                    {
+                        string monthKey = Path.GetFileNameWithoutExtension(file).Substring("kdiag-".Length);
+                        Dictionary<int, Dictionary<int, SwallowGapHist>> loaded =
+                            DiagnosticsSidecar.TryLoad(diagDir, monthKey);
+                        if (loaded == null) continue;
+                        foreach (KeyValuePair<int, Dictionary<int, SwallowGapHist>> kv in loaded)
+                        {
+                            _gapHist[kv.Key] = kv.Value;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+            Dictionary<string, long> shortcuts = ShortcutStore.TryLoad(Path.Combine(_dataDir, "v2"));
+            foreach (KeyValuePair<string, long> kv in shortcuts)
+            {
+                _shortcutCounts[kv.Key] = kv.Value;
+            }
+        }
+
+        /// <summary>把当前月份的 V2 侧车落盘（用量 + 诊断 + 快捷键）。统计主链路失败不影响侧车。</summary>
+        private void FlushSidecars(MonthData md)
+        {
+            if (md == null) return;
+            UsageSidecar.Save(Path.Combine(_dataDir, "v2"), md);
+            DiagnosticsSidecar.Save(Path.Combine(_dataDir, "diagnostics"), md.Key, _gapHist);
+            ShortcutStore.Save(Path.Combine(_dataDir, "v2"), _shortcutCounts);
         }
 
         public void Enqueue(KeyEvent e)
@@ -80,10 +157,86 @@ namespace KeyInsight.Stats
             {
                 _signal.WaitOne(200);
                 Drain();
+                TryBuildRequestedSnapshot();
                 if ((DateTime.UtcNow - _lastSaveUtc).TotalSeconds >= 60) SaveCurrent();
             }
             Drain();
+            TryBuildRequestedSnapshot();
             SaveCurrent();
+        }
+
+        /// <summary>
+        /// 请求异步快照（PR-1）：只保留最新请求（合并），返回本次 generation。
+        /// 若已有同 key 缓存（范围 + 数据版本一致）则直接复用；结果经 SnapshotBuilt 回调。
+        /// </summary>
+        public long RequestSnapshot(DateTime start, DateTime end)
+        {
+            UiMetrics.CountSnapshotRequest();
+            long gen;
+            lock (_reqGate)
+            {
+                if (_reqPending) UiMetrics.CountSnapshotCoalesced();
+                _reqPending = true;
+                _reqStart = start;
+                _reqEnd = end;
+                gen = ++_reqCounter;
+                _reqGeneration = gen;
+            }
+            _signal.Set();
+            return gen;
+        }
+
+        private void TryBuildRequestedSnapshot()
+        {
+            DateTime start, end;
+            long gen;
+            lock (_reqGate)
+            {
+                if (!_reqPending) return;
+                _reqPending = false;
+                start = _reqStart;
+                end = _reqEnd;
+                gen = _reqGeneration;
+            }
+
+            StatsSnapshot snap;
+            long version = DataVersion;
+            string key = start.Ticks.ToString() + "|" + end.Ticks.ToString() + "|" + version.ToString();
+            if (_snapCache.TryGetValue(key, out snap))
+            {
+                Action<StatsSnapshot, long> cbHit = SnapshotBuilt;
+                if (cbHit != null)
+                {
+                    try { cbHit(snap, gen); } catch { }
+                }
+                return;
+            }
+
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                snap = GetSnapshot(start, end);
+            }
+            catch
+            {
+                return;
+            }
+            sw.Stop();
+            UiMetrics.RecordSnapshot(sw.Elapsed.TotalMilliseconds);
+
+            _snapCache[key] = snap;
+            _snapCacheOrder.Add(key);
+            if (_snapCacheOrder.Count > 8)
+            {
+                _snapCache.Remove(_snapCacheOrder[0]);
+                _snapCacheOrder.RemoveAt(0);
+            }
+
+            Action<StatsSnapshot, long> cb = SnapshotBuilt;
+            if (cb != null)
+            {
+                try { cb(snap, gen); } catch { }
+            }
         }
 
         private void Drain()
@@ -102,8 +255,28 @@ namespace KeyInsight.Stats
             string app = NormalizeApp(e.App);
             if (_selfApp.Length > 0 && string.Equals(app, _selfApp, StringComparison.OrdinalIgnoreCase)) return;
 
+            bool sample = (Interlocked.Increment(ref _applyCounter) & 31) == 0;
+            long t0 = sample ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             lock (_gate)
             {
+                long t1 = sample ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                try
+                {
+                    ApplyLocked(e, app);
+                }
+                finally
+                {
+                    if (sample)
+                    {
+                        UiMetrics.RecordLockWait(TicksToMsLocal(t1 - t0));
+                        UiMetrics.RecordLockHold(TicksToMsLocal(System.Diagnostics.Stopwatch.GetTimestamp() - t1));
+                    }
+                }
+            }
+        }
+
+        private void ApplyLocked(KeyEvent e, string app)
+        {
                 EnsureMonth(e.At);
                 int dayKey = DayKeys.From(e.At);
                 DayData day = GetDay(_current, dayKey);
@@ -164,6 +337,44 @@ namespace KeyInsight.Stats
                     r.GapShortUp = e.GapShortUp;
                     _recent.Add(r);
                     if (_recent.Count > 240) _recent.RemoveAt(0);
+
+                    // P1-02/P2-01：按日按 VK 的间隔直方图（仅聚合摘要；短间隔候选才是诊断关注点，
+                    // 但全量直方图对阈值模拟更有用，保留全部桶）。诊断开关关闭时不采集。
+                    if (!DiagnosticsEnabled)
+                    {
+                        _version++;
+                        return;
+                    }
+                    Dictionary<int, SwallowGapHist> dayHist;
+                    if (!_gapHist.TryGetValue(dayKey, out dayHist))
+                    {
+                        dayHist = new Dictionary<int, SwallowGapHist>();
+                        _gapHist[dayKey] = dayHist;
+                    }
+                    SwallowGapHist vkHist;
+                    if (!dayHist.TryGetValue(e.Vk, out vkHist))
+                    {
+                        vkHist = new SwallowGapHist();
+                        dayHist[e.Vk] = vkHist;
+                    }
+                    vkHist.Add(e.GapDown, e.GapShortUp);
+                }
+                else if (e.Type == KeyEventType.Shortcut)
+                {
+                    // P2-04：仅聚合计数，不进 KDS1、不产生键序列记录
+                    string combo = e.App;
+                    if (!string.IsNullOrEmpty(combo) && combo != "unknown")
+                    {
+                        long cur;
+                        _shortcutCounts.TryGetValue(combo, out cur);
+                        _shortcutCounts[combo] = cur + 1;
+                    }
+                }
+                else if (e.Type == KeyEventType.WheelRaw)
+                {
+                    // P2-03：原始滚轮 delta（可为负）；仅内存 + 侧车，不入 KDS1
+                    day.RawWheelDelta += e.Delta;
+                    day.RawWheelEvents++;
                 }
                 else
                 {
@@ -173,11 +384,15 @@ namespace KeyInsight.Stats
                         AddMouse(day.Mouse, e.Button, add);
                         AppAgg agg = GetApp(day, app);
                         AddMouse(agg.Mouse, e.Button, add);
+                        // V2 口径：鼠标活跃分钟（仅内存位图 + 侧车，不入 KDS1）
+                        if (!day.MouseMinutes[minute])
+                        {
+                            day.MouseMinutes[minute] = true;
+                        }
                     }
                 }
 
                 _version++;
-            }
         }
 
         private void EnsureMonth(DateTime at)
@@ -212,6 +427,23 @@ namespace KeyInsight.Stats
             _current = md;
         }
 
+        /// <summary>把侧车里的鼠标分钟位图回填到已加载的月数据（KDS1 不含该口径）。</summary>
+        private void ApplyMouseMinutes(MonthData md)
+        {
+            if (md == null) return;
+            Dictionary<int, bool[]> mouseMinutes = UsageSidecar.TryLoadMouseMinutes(
+                Path.Combine(_dataDir, "v2"), md.Key);
+            if (mouseMinutes == null) return;
+            foreach (KeyValuePair<int, bool[]> kv in mouseMinutes)
+            {
+                DayData day;
+                if (md.Days.TryGetValue(kv.Key, out day))
+                {
+                    Array.Copy(kv.Value, day.MouseMinutes, 1440);
+                }
+            }
+        }
+
         private void LoadCurrentMonth(DateTime at)
         {
             lock (_gate)
@@ -223,6 +455,7 @@ namespace KeyInsight.Stats
                     try
                     {
                         md = MonthFile.Load(PathFor(key), at.Year, at.Month);
+                        ApplyMouseMinutes(md);
                     }
                     catch (Exception ex)
                     {
@@ -255,7 +488,9 @@ namespace KeyInsight.Stats
                         if (_months.ContainsKey(key)) continue;
                         try
                         {
-                            _months[key] = MonthFile.Load(file, y, m);
+                            MonthData loaded = MonthFile.Load(file, y, m);
+                            ApplyMouseMinutes(loaded);
+                            _months[key] = loaded;
                         }
                         catch (Exception ex)
                         {
@@ -279,6 +514,7 @@ namespace KeyInsight.Stats
                 {
                     try { MonthFile.Save(PathFor(_current.Key), _current); }
                     catch (Exception ex) { LogError(ex); }
+                    FlushSidecars(_current);
                 }
                 _lastSaveUtc = DateTime.UtcNow;
             }
@@ -292,6 +528,7 @@ namespace KeyInsight.Stats
                 {
                     try { MonthFile.Save(PathFor(md.Key), md); }
                     catch (Exception ex) { LogError(ex); }
+                    FlushSidecars(md);
                 }
                 _lastSaveUtc = DateTime.UtcNow;
             }
@@ -322,8 +559,11 @@ namespace KeyInsight.Stats
 
         public StatsSnapshot GetSnapshot(DateTime start, DateTime end)
         {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             lock (_gate)
             {
+                long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                UiMetrics.RecordLockWait(TicksToMsLocal(t1 - t0));
                 StatsSnapshot s = new StatsSnapshot();
                 DateTime today = DateTime.Today;
 
@@ -366,6 +606,73 @@ namespace KeyInsight.Stats
                 s.Months = GetMonthsLocked();
                 s.HistoryComplete = _allLoaded;
 
+                // V2 附加口径：30 天拦截间隔直方图（P2-01 模拟输入）、综合活跃分钟、快捷键 Top
+                DateTime histStart = today.AddDays(-29);
+                foreach (KeyValuePair<int, Dictionary<int, SwallowGapHist>> kv in _gapHist)
+                {
+                    DateTime d = DayKeys.ToDate(kv.Key);
+                    if (d < histStart || d > today) continue;
+                    foreach (KeyValuePair<int, SwallowGapHist> vk in kv.Value)
+                    {
+                        SwallowGapHist agg;
+                        if (!s.GapHistograms.TryGetValue(vk.Key, out agg))
+                        {
+                            agg = new SwallowGapHist();
+                            s.GapHistograms[vk.Key] = agg;
+                        }
+                        for (int b = 0; b < SwallowGapHist.BucketCount; b++)
+                        {
+                            agg.GapDown[b] += vk.Value.GapDown[b];
+                            agg.GapShortUp[b] += vk.Value.GapShortUp[b];
+                        }
+                        agg.Count += vk.Value.Count;
+                    }
+                }
+
+                int combined = 0;
+                foreach (MonthData md in _months.Values)
+                {
+                    foreach (DayData dd in md.Days.Values)
+                    {
+                        DateTime d = DayKeys.ToDate(dd.Day);
+                        if (d >= rangeStart && d <= rangeEnd)
+                        {
+                            combined += ActiveMinutesCalculator.CombinedCount(dd);
+                        }
+                    }
+                }
+                s.CombinedActiveMinutes = combined;
+
+                long rawDelta = 0;
+                long rawEvents = 0;
+                foreach (MonthData md in _months.Values)
+                {
+                    foreach (DayData dd in md.Days.Values)
+                    {
+                        DateTime d = DayKeys.ToDate(dd.Day);
+                        if (d >= rangeStart && d <= rangeEnd)
+                        {
+                            rawDelta += dd.RawWheelDelta;
+                            rawEvents += dd.RawWheelEvents;
+                        }
+                    }
+                }
+                s.RawWheelDeltaTotal = rawDelta;
+                s.RawWheelEventsTotal = rawEvents;
+
+                List<string> comboKeys = new List<string>(_shortcutCounts.Keys);
+                comboKeys.Sort(delegate(string a, string b)
+                {
+                    long ca = _shortcutCounts[a];
+                    long cb = _shortcutCounts[b];
+                    if (ca != cb) return cb.CompareTo(ca);
+                    return string.CompareOrdinal(a, b);
+                });
+                for (int i = 0; i < comboKeys.Count && s.TopShortcuts.Count < 10; i++)
+                {
+                    s.TopShortcuts.Add(new KeyValuePair<string, long>(comboKeys[i], _shortcutCounts[comboKeys[i]]));
+                }
+
                 long nowSec = ToUnixSeconds(DateTime.Now);
                 long sum = 0;
                 for (int i = 0; i < 60; i++)
@@ -373,6 +680,7 @@ namespace KeyInsight.Stats
                     if (_secStamp[i] > 0 && nowSec - _secStamp[i] < 60) sum += _secCount[i];
                 }
                 s.KpmNow = sum;
+                UiMetrics.RecordLockHold(TicksToMsLocal(System.Diagnostics.Stopwatch.GetTimestamp() - t1));
                 return s;
             }
         }
@@ -722,6 +1030,10 @@ namespace KeyInsight.Stats
                 DeleteFile(path);
                 DeleteFile(path + ".bak");
                 DeleteFile(path + ".tmp");
+                // STO-015：侧车与主数据同生共死，删除月份时同步清理
+                DeleteFile(Path.Combine(_dataDir, "v2", "usage-" + key + ".jsonl"));
+                DeleteFile(Path.Combine(_dataDir, "diagnostics", "kdiag-" + key + ".jsonl"));
+                RemoveGapHistForMonth(key);
 
                 MonthData md;
                 if (_current != null && _current.Key == key)
@@ -751,10 +1063,22 @@ namespace KeyInsight.Stats
                 {
                     string[] files = Directory.GetFiles(_dataDir, "*.kds*");
                     foreach (string file in files) DeleteFile(file);
+                    // STO-015：清空全部数据时诊断/用量侧车一并清除
+                    string v2Dir = Path.Combine(_dataDir, "v2");
+                    if (Directory.Exists(v2Dir))
+                    {
+                        foreach (string f in Directory.GetFiles(v2Dir, "usage-*.jsonl")) DeleteFile(f);
+                    }
+                    string diagDir = Path.Combine(_dataDir, "diagnostics");
+                    if (Directory.Exists(diagDir))
+                    {
+                        foreach (string f in Directory.GetFiles(diagDir, "kdiag-*.jsonl")) DeleteFile(f);
+                    }
                 }
                 catch
                 {
                 }
+                _gapHist.Clear();
 
                 _months.Clear();
                 _recent.Clear();
@@ -973,6 +1297,18 @@ namespace KeyInsight.Stats
         {
             try { if (File.Exists(path)) File.Delete(path); }
             catch { }
+        }
+
+        private void RemoveGapHistForMonth(string monthKey)
+        {
+            List<int> remove = new List<int>();
+            foreach (int dayKey in _gapHist.Keys)
+            {
+                int y = dayKey / 10000;
+                int m = (dayKey / 100) % 100;
+                if (DayKeys.MonthKey(y, m) == monthKey) remove.Add(dayKey);
+            }
+            for (int i = 0; i < remove.Count; i++) _gapHist.Remove(remove[i]);
         }
 
         private void InvalidateMonthCache()

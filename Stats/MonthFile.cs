@@ -15,131 +15,175 @@ namespace KeyInsight.Stats
             MonthData md = new MonthData();
             md.Year = year;
             md.Month = month;
+
+            // STO-007：崩溃恢复。主文件缺失时按 .bak → .tmp 顺序尝试恢复；
+            // 主文件存在但残留 .tmp 时顺手清理（正常保存路径本应已删除）。
+            if (!File.Exists(path))
+            {
+                if (File.Exists(path + ".bak"))
+                {
+                    try { File.Copy(path + ".bak", path, false); }
+                    catch { }
+                }
+                else if (File.Exists(path + ".tmp"))
+                {
+                    try { File.Copy(path + ".tmp", path, false); }
+                    catch { }
+                }
+            }
+            else if (File.Exists(path + ".tmp"))
+            {
+                try { File.Delete(path + ".tmp"); }
+                catch { }
+            }
             if (!File.Exists(path)) return md;
 
             using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             using (StreamReader reader = new StreamReader(fs, Encoding.UTF8, true))
             {
-                string line;
-                while ((line = reader.ReadLine()) != null)
+                // 文件级完整性门（STO-004）：v2.x 写出的 KDS1 首行都是 "# KDS1 ..." 注释头。
+                // 非空文件缺头 = 半截写入/二进制垃圾/外部损坏 —— 行级容错（STO-003）无法区分
+                // “未知扩展记录”和“损坏”，必须在文件级隔离，否则垃圾会被静默误收进统计。
+                // 由 StatsEngine 捕获并隔离为 .corrupt。
+                string firstLine = reader.ReadLine();
+                if (firstLine != null)
                 {
-                    if (line.Length == 0) continue;
-                    if (line[0] == '#') continue;
-                    string[] p = line.Split('\t');
-                    if (p.Length < 2) continue;
-
-                    int dayKey;
-                    if (!int.TryParse(p[1], NumberStyles.Integer, Inv, out dayKey)) continue;
-                    DayData day = GetDay(md, dayKey);
-
-                    switch (p[0])
+                    string trimmedFirst = firstLine.TrimStart('\ufeff');
+                    if (trimmedFirst.Length > 0 && !trimmedFirst.StartsWith("#", StringComparison.Ordinal))
                     {
-                        case "D":
-                            if (p.Length >= 4)
-                            {
-                                long total, sw;
-                                long.TryParse(p[2], NumberStyles.Integer, Inv, out total);
-                                long.TryParse(p[3], NumberStyles.Integer, Inv, out sw);
-                                day.Total += total;
-                                day.Swallowed += sw;
-                                md.Total += total;
-                                md.Swallowed += sw;
-                            }
-                            if (p.Length >= 6)
-                            {
-                                int active;
-                                if (int.TryParse(p[4], NumberStyles.Integer, Inv, out active)) day.ActiveMinutes = active;
-                                ParseHours(p[5], day.Hours);
-                            }
-                            break;
-
-                        case "M":
-                            if (p.Length >= 3)
-                            {
-                                HexToMinutes(p[2], day);
-                                day.ActiveMinutes = CountActive(day.Minutes);
-                            }
-                            break;
-
-                        case "K":
-                            if (p.Length >= 4)
-                            {
-                                int vk;
-                                long c, s;
-                                if (int.TryParse(p[2], NumberStyles.Integer, Inv, out vk) &&
-                                    long.TryParse(p[3], NumberStyles.Integer, Inv, out c))
-                                {
-                                    long.TryParse(p.Length >= 5 ? p[4] : "0", NumberStyles.Integer, Inv, out s);
-                                    day.Keys[vk] = new KeyAgg(c, s);
-                                }
-                            }
-                            break;
-
-                        case "A":
-                            if (p.Length >= 5)
-                            {
-                                string app = p[2];
-                                long total, sw;
-                                long.TryParse(p[3], NumberStyles.Integer, Inv, out total);
-                                long.TryParse(p[4], NumberStyles.Integer, Inv, out sw);
-                                AppAgg agg = GetApp(day, app);
-                                agg.Total += total;
-                                agg.Swallowed += sw;
-                                if (p.Length >= 6) ParseHours(p[5], agg.Hours);
-                            }
-                            break;
-
-                        case "AK":
-                            if (p.Length >= 5)
-                            {
-                                string app = p[2];
-                                int vk;
-                                long c, s;
-                                if (int.TryParse(p[3], NumberStyles.Integer, Inv, out vk) &&
-                                    long.TryParse(p[4], NumberStyles.Integer, Inv, out c))
-                                {
-                                    long.TryParse(p.Length >= 6 ? p[5] : "0", NumberStyles.Integer, Inv, out s);
-                                    AppAgg agg = GetApp(day, app);
-                                    agg.Keys[vk] = new KeyAgg(c, s);
-                                }
-                            }
-                            break;
-
-                        case "MB":
-                            if (p.Length >= 4)
-                            {
-                                int button;
-                                long count;
-                                if (int.TryParse(p[2], NumberStyles.Integer, Inv, out button) &&
-                                    long.TryParse(p[3], NumberStyles.Integer, Inv, out count))
-                                {
-                                    long cur;
-                                    day.Mouse.TryGetValue(button, out cur);
-                                    day.Mouse[button] = cur + count;
-                                }
-                            }
-                            break;
-
-                        case "AMB":
-                            if (p.Length >= 5)
-                            {
-                                int button;
-                                long count;
-                                if (int.TryParse(p[3], NumberStyles.Integer, Inv, out button) &&
-                                    long.TryParse(p[4], NumberStyles.Integer, Inv, out count))
-                                {
-                                    AppAgg agg = GetApp(day, p[2]);
-                                    long cur;
-                                    agg.Mouse.TryGetValue(button, out cur);
-                                    agg.Mouse[button] = cur + count;
-                                }
-                            }
-                            break;
+                        throw new InvalidDataException("missing KDS1 header; file appears corrupt: " + path);
                     }
+                }
+
+                string line = firstLine;
+                while (line != null)
+                {
+                    if (line.Length > 0 && line[0] != '#')
+                    {
+                        string[] p = line.Split('\t');
+                        if (p.Length >= 2)
+                        {
+                            int dayKey;
+                            if (int.TryParse(p[1], NumberStyles.Integer, Inv, out dayKey))
+                            {
+                                DayData day = GetDay(md, dayKey);
+                                ParseRecord(p, day, md);
+                            }
+                        }
+                    }
+                    line = reader.ReadLine();
                 }
             }
 
             return md;
+        }
+
+        private static void ParseRecord(string[] p, DayData day, MonthData md)
+        {
+            switch (p[0])
+            {
+                case "D":
+                    if (p.Length >= 4)
+                    {
+                        long total, sw;
+                        long.TryParse(p[2], NumberStyles.Integer, Inv, out total);
+                        long.TryParse(p[3], NumberStyles.Integer, Inv, out sw);
+                        day.Total += total;
+                        day.Swallowed += sw;
+                        md.Total += total;
+                        md.Swallowed += sw;
+                    }
+                    if (p.Length >= 6)
+                    {
+                        int active;
+                        if (int.TryParse(p[4], NumberStyles.Integer, Inv, out active)) day.ActiveMinutes = active;
+                        ParseHours(p[5], day.Hours);
+                    }
+                    break;
+
+                case "M":
+                    if (p.Length >= 3)
+                    {
+                        HexToMinutes(p[2], day);
+                        day.ActiveMinutes = CountActive(day.Minutes);
+                    }
+                    break;
+
+                case "K":
+                    if (p.Length >= 4)
+                    {
+                        int vk;
+                        long c, s;
+                        if (int.TryParse(p[2], NumberStyles.Integer, Inv, out vk) &&
+                            long.TryParse(p[3], NumberStyles.Integer, Inv, out c))
+                        {
+                            long.TryParse(p.Length >= 5 ? p[4] : "0", NumberStyles.Integer, Inv, out s);
+                            day.Keys[vk] = new KeyAgg(c, s);
+                        }
+                    }
+                    break;
+
+                case "A":
+                    if (p.Length >= 5)
+                    {
+                        string app = p[2];
+                        long total, sw;
+                        long.TryParse(p[3], NumberStyles.Integer, Inv, out total);
+                        long.TryParse(p[4], NumberStyles.Integer, Inv, out sw);
+                        AppAgg agg = GetApp(day, app);
+                        agg.Total += total;
+                        agg.Swallowed += sw;
+                        if (p.Length >= 6) ParseHours(p[5], agg.Hours);
+                    }
+                    break;
+
+                case "AK":
+                    if (p.Length >= 5)
+                    {
+                        string app = p[2];
+                        int vk;
+                        long c, s;
+                        if (int.TryParse(p[3], NumberStyles.Integer, Inv, out vk) &&
+                            long.TryParse(p[4], NumberStyles.Integer, Inv, out c))
+                        {
+                            long.TryParse(p.Length >= 6 ? p[5] : "0", NumberStyles.Integer, Inv, out s);
+                            AppAgg agg = GetApp(day, app);
+                            agg.Keys[vk] = new KeyAgg(c, s);
+                        }
+                    }
+                    break;
+
+                case "MB":
+                    if (p.Length >= 4)
+                    {
+                        int button;
+                        long count;
+                        if (int.TryParse(p[2], NumberStyles.Integer, Inv, out button) &&
+                            long.TryParse(p[3], NumberStyles.Integer, Inv, out count))
+                        {
+                            long cur;
+                            day.Mouse.TryGetValue(button, out cur);
+                            day.Mouse[button] = cur + count;
+                        }
+                    }
+                    break;
+
+                case "AMB":
+                    if (p.Length >= 5)
+                    {
+                        int button;
+                        long count;
+                        if (int.TryParse(p[3], NumberStyles.Integer, Inv, out button) &&
+                            long.TryParse(p[4], NumberStyles.Integer, Inv, out count))
+                        {
+                            AppAgg agg = GetApp(day, p[2]);
+                            long cur;
+                            agg.Mouse.TryGetValue(button, out cur);
+                            agg.Mouse[button] = cur + count;
+                        }
+                    }
+                    break;
+            }
         }
 
         public static void Save(string path, MonthData md)

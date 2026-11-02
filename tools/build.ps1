@@ -27,7 +27,7 @@ $png = Join-Path $root 'Assets\app256.png'
 $manifest = Join-Path $root 'app.manifest'
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.cs |
-    Where-Object { $_.FullName -notmatch '\\Assets\\' } |
+    Where-Object { $_.FullName -notmatch '\\Assets\\|\\Tests\\|\\artifacts\\' } |
     ForEach-Object { $_.FullName }
 
 $args = @(
