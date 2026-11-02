@@ -13,11 +13,16 @@ namespace KeyInsight.UI.Pages
         private string[] _appKeys = new string[0];
         private Rectangle[] _appRects = new Rectangle[0];
         private Rectangle[] _layoutRects = new Rectangle[0];
+        private Rectangle[] _layerRects = new Rectangle[0];
         private Dictionary<KeyDef, RectangleF> _hits = new Dictionary<KeyDef, RectangleF>();
         private KeyDef _hover;
+        private int _layer; // 0=使用 1=疑似异常候选 2=实际拦截
+        private Dictionary<int, long> _layerValues;
+
+        private static readonly string[] LayerNames = new string[] { "使用频率", "疑似异常候选", "实际拦截" };
 
         public override string Title { get { return "键盘热力图"; } }
-        public override string Subtitle { get { return "每个按键的使用次数，颜色越深代表使用越多"; } }
+        public override string Subtitle { get { return "使用频率 / 疑似异常候选 / 实际拦截 三图层；点击按键查看详情"; } }
 
         public KeyboardPage(IShellActions shell)
         {
@@ -29,13 +34,21 @@ namespace KeyInsight.UI.Pages
         {
             get
             {
-                return _shell.Cfg.KeyboardLayout == 0 ? KeyLayout.Layout87 : KeyLayout.Layout108;
+                switch (_shell.Cfg.KeyboardLayout)
+                {
+                    case 0: return KeyLayout.Layout87;
+                    case 2: return KeyLayout.Layout87Iso;
+                    case 3: return KeyLayout.Layout108Iso;
+                    default: return KeyLayout.Layout108;
+                }
             }
         }
 
         public override void SetSnapshot(StatsSnapshot s)
         {
             base.SetSnapshot(s);
+            // PR-2：图层指标预计算（Draw 内不做聚合）
+            _layerValues = BuildLayerValues(s.Range.Keys);
             if (_appFilter != null && !s.Range.Apps.ContainsKey(_appFilter))
             {
                 _appFilter = null;
@@ -48,16 +61,17 @@ namespace KeyInsight.UI.Pages
             Palette p = Theme.P;
             DrawHeader(g);
             DrawRangeChips(g, 0, 58);
-            DrawLayoutChips(g, 58);
+            DrawLayerChips(g, 58);
             DrawAppChips(g, 0, 92);
 
             int cardY = 128;
             int statsH = 106;
-            int keyboardH = Height - cardY - 14 - statsH;
-            Rectangle card = new Rectangle(0, cardY, Width, keyboardH);
+            int keyboardH = ContentH - cardY - 14 - statsH;
+            Rectangle card = new Rectangle(0, cardY, ContentW, keyboardH);
             KeyLayoutDef layout = LayoutDef;
             string scope = _appFilter == null ? "范围：" + RangeText() : "应用：" + AppNames.Display(_appFilter);
             SectionCard(g, card, "按键分布", scope + " · " + layout.ShortName);
+            DrawLayoutChips(g, card);
 
             Dictionary<int, KeyAgg> counts;
             long total;
@@ -86,11 +100,19 @@ namespace KeyInsight.UI.Pages
             }
 
             Rectangle kbArea = new Rectangle(card.X + 16, card.Y + 54, card.Width - 32, card.Height - 54 - 42);
-            _hits = Charts.DrawKeyboard(g, kbArea, counts, p, _hover, layout);
+            if (_layer == 0)
+            {
+                _hits = Charts.DrawKeyboard(g, kbArea, counts, p, _hover, layout);
+            }
+            else
+            {
+                if (_layerValues == null) _layerValues = BuildLayerValues(counts);
+                _hits = Charts.DrawKeyboardValues(g, kbArea, _layerValues, p, _hover, layout);
+            }
             DrawLegend(g, new Rectangle(card.X + 22, card.Bottom - 30, card.Width - 44, 18), p, counts, total);
 
             int gap = 14;
-            int cardW = (Width - gap * 3) / 4;
+            int cardW = (ContentW - gap * 3) / 4;
             int sy = cardY + keyboardH + gap;
 
             string topKey = "-";
@@ -115,15 +137,57 @@ namespace KeyInsight.UI.Pages
             DrawHoverTip(g);
         }
 
-        private void DrawLayoutChips(Graphics g, int y)
+        private void DrawLayerChips(Graphics g, int y)
         {
-            string[] labels = new string[] { "87 键", "108 键" };
-            int w0 = Ui.MeasureWidth(g, labels[0], Ui.BodySmall) + 26;
-            int w1 = Ui.MeasureWidth(g, labels[1], Ui.BodySmall) + 26;
-            int total = w0 + 8 + w1;
-            int x = Width - total;
-            int sel = _shell.Cfg.KeyboardLayout == 0 ? 0 : 1;
-            DrawChips(g, labels, sel, x, y, 26, out _layoutRects);
+            int total = 0;
+            int[] ws = new int[LayerNames.Length];
+            for (int i = 0; i < LayerNames.Length; i++)
+            {
+                ws[i] = Ui.MeasureWidth(g, LayerNames[i], Ui.BodySmall) + 26;
+                total += ws[i] + 8;
+            }
+            DrawChips(g, LayerNames, _layer, ContentW - total + 8, y, 26, out _layerRects);
+        }
+
+        private void DrawLayoutChips(Graphics g, Rectangle card)
+        {
+            string[] labels = new string[] { "87 键", "108 键", "87 ISO", "108 ISO" };
+            int total = 0;
+            int[] ws = new int[labels.Length];
+            for (int i = 0; i < labels.Length; i++)
+            {
+                ws[i] = Ui.MeasureWidth(g, labels[i], Ui.BodySmall) + 26;
+                total += ws[i] + 8;
+            }
+            int x = card.Right - 18 - total + 8;
+            int y = card.Y + 12;
+            int sel = Math.Max(0, Math.Min(labels.Length - 1, _shell.Cfg.KeyboardLayout));
+            DrawChips(g, labels, sel, x, y, 24, out _layoutRects);
+        }
+
+        private Dictionary<int, long> BuildLayerValues(Dictionary<int, KeyAgg> counts)
+        {
+            Dictionary<int, long> values = new Dictionary<int, long>();
+            if (_layer == 2)
+            {
+                if (counts != null)
+                {
+                    foreach (KeyValuePair<int, KeyAgg> kv in counts)
+                    {
+                        if (kv.Value.Swallowed > 0) values[kv.Key] = kv.Value.Swallowed;
+                    }
+                }
+                return values;
+            }
+            // 图层 1：疑似异常候选 —— 来自诊断侧车聚合直方图（最近 30 天，与统计范围无关）
+            if (Snap != null && Snap.GapHistograms != null)
+            {
+                foreach (KeyValuePair<int, SwallowGapHist> kv in Snap.GapHistograms)
+                {
+                    if (kv.Value.Count > 0) values[kv.Key] = kv.Value.Count;
+                }
+            }
+            return values;
         }
 
         private void DrawAppChips(Graphics g, int x, int y)
@@ -138,11 +202,17 @@ namespace KeyInsight.UI.Pages
             List<string> keys = new List<string>();
             labels.Add("全部应用");
             keys.Add(null);
+            int usedW = Ui.MeasureWidth(g, "全部应用", Ui.BodySmall) + 26 + 8;
+            int budget = Math.Max(240, ContentW - 40);
             for (int i = 0; i < list.Count && labels.Count < 7; i++)
             {
                 if (list[i].Value.Total <= 0) continue;
-                labels.Add(AppNames.Display(list[i].Key));
+                string label = AppNames.Display(list[i].Key);
+                int w = Ui.MeasureWidth(g, label, Ui.BodySmall) + 26 + 8;
+                if (usedW + w > budget) break;
+                labels.Add(label);
                 keys.Add(list[i].Key);
+                usedW += w;
             }
             if (_appFilter != null && !keys.Contains(_appFilter))
             {
@@ -171,19 +241,27 @@ namespace KeyInsight.UI.Pages
             }
             Ui.TextLeft(g, "多", Ui.Label, p.Dim, new Rectangle(x + 4, r.Y, 18, r.Height));
             int lx = x + 42;
-            int cy = r.Y + r.Height / 2;
-            using (SolidBrush ring = new SolidBrush(Color.FromArgb(150, 0, 0, 0)))
+            if (_layer == 0)
             {
-                g.FillEllipse(ring, lx - 6, cy - 6, 12, 12);
+                int cy = r.Y + r.Height / 2;
+                using (SolidBrush ring = new SolidBrush(Color.FromArgb(150, 0, 0, 0)))
+                {
+                    g.FillEllipse(ring, lx - 6, cy - 6, 12, 12);
+                }
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(190, 30, 30)))
+                {
+                    g.FillEllipse(b, lx - 4, cy - 4, 8, 8);
+                }
+                Ui.TextLeft(g, "红点 = 抖动，颜色越深次数越多", Ui.Label, p.Muted,
+                    new Rectangle(lx + 12, r.Y, 320, r.Height));
             }
-            using (SolidBrush b = new SolidBrush(Color.FromArgb(190, 30, 30)))
+            else
             {
-                g.FillEllipse(b, lx - 4, cy - 4, 8, 8);
+                Ui.TextLeft(g, _layer == 1 ? "颜色 = 疑似异常候选（30 天拦截样本，仅观察）" : "颜色 = 实际拦截次数",
+                    Ui.Label, p.Muted, new Rectangle(lx, r.Y, 380, r.Height));
             }
-            Ui.TextLeft(g, "红点 = 抖动，颜色越深次数越多", Ui.Label, p.Muted,
-                new Rectangle(lx + 12, r.Y, 320, r.Height));
-            Ui.TextRight(g, "颜色越深 = 使用越多", Ui.Label, p.Dim,
-                new Rectangle(r.Right - 220, r.Y, 220, r.Height));
+            Ui.TextRight(g, "颜色越深 = " + (_layer == 0 ? "使用越多" : _layer == 1 ? "候选越多" : "拦截越多"),
+                Ui.Label, p.Dim, new Rectangle(r.Right - 220, r.Y, 220, r.Height));
         }
 
         private string RangeText()
@@ -219,9 +297,20 @@ namespace KeyInsight.UI.Pages
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button != MouseButtons.Left) return;            if (HandleRangeClick(e.Location)) return;
+            if (e.Button != MouseButtons.Left) return;
+            Point pt = ToContent(e.Location);
+            if (HandleRangeClick(pt)) return;
 
-            int li = HitRects(e.Location, _layoutRects);
+            int la = HitRects(pt, _layerRects);
+            if (la >= 0 && la < LayerNames.Length)
+            {
+                _layer = la;
+                _layerValues = BuildLayerValues(CurrentCounts());
+                Invalidate();
+                return;
+            }
+
+            int li = HitRects(pt, _layoutRects);
             if (li >= 0)
             {
                 _shell.Cfg.KeyboardLayout = li;
@@ -231,12 +320,27 @@ namespace KeyInsight.UI.Pages
                 return;
             }
 
-            int idx = HitRects(e.Location, _appRects);
+            int idx = HitRects(pt, _appRects);
             if (idx >= 0 && idx < _appKeys.Length)
             {
                 _appFilter = _appKeys[idx];
                 _hover = null;
                 Invalidate();
+                return;
+            }
+
+            // P1-03：点击按键 → 打开唯一按键详情（物理键身份经 VK 映射到统计口径）
+            foreach (KeyValuePair<KeyDef, RectangleF> kv in _hits)
+            {
+                if (kv.Value.Contains(pt.X, pt.Y) && kv.Key.Vks.Length > 0)
+                {
+                    using (KeyDetailForm f = new KeyDetailForm(_shell, kv.Key.Vks[0]))
+                    {
+                        f.ShowDialog(FindForm());
+                    }
+                    Invalidate();
+                    return;
+                }
             }
         }
 
@@ -246,7 +350,8 @@ namespace KeyInsight.UI.Pages
             KeyDef found = null;
             foreach (KeyValuePair<KeyDef, RectangleF> kv in _hits)
             {
-                if (kv.Value.Contains(e.X, e.Y)) { found = kv.Key; break; }
+                Point mp = ToContent(e.Location);
+                if (kv.Value.Contains(mp.X, mp.Y)) { found = kv.Key; break; }
             }
             if (found != _hover)
             {
@@ -281,11 +386,11 @@ namespace KeyInsight.UI.Pages
             int w = 214;
             int h = 116;
             int x = (int)keyRect.Right + 12;
-            if (x + w > Width - 8) x = (int)keyRect.Left - w - 12;
+            if (x + w > ContentW - 8) x = (int)keyRect.Left - w - 12;
             if (x < 8) x = 8;
             int y = (int)keyRect.Top - 10;
-            if (y + h > Height - 8) y = Height - h - 8;
-            if (y < 8) y = 8;
+            if (y + h > ViewBottom - 8) y = ViewBottom - h - 8;
+            if (y < ViewTop + 8) y = ViewTop + 8;
             Rectangle r = new Rectangle(x, y, w, h);
 
             Ui.FillRound(g, new Rectangle(r.X + 3, r.Y + 5, w, h), 12, Color.FromArgb(80, 0, 0, 0));

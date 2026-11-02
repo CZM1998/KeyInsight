@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Diagnostics;
 using System.Windows.Forms;
 using KeyInsight.Stats;
 
@@ -28,6 +29,9 @@ namespace KeyInsight.UI.Pages
         public virtual DateTime RangeStart { get { return StartFor(Range); } }
         public virtual DateTime RangeEnd { get { return EndFor(Range); } }
 
+        private int _scrollY;
+        private readonly PageCanvas _canvas;
+
         protected PageBase()
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
@@ -35,6 +39,162 @@ namespace KeyInsight.UI.Pages
             BackColor = Theme.P.Bg;
             DoubleBuffered = true;
             TabStop = false;
+
+            // 视口 + 子画布结构：内容画在高为 ContentH 的真实子控件上，滚动 = 移动子控件。
+            // 不能用 Graphics.TranslateTransform 平移自绘内容：TextRenderer（GDI 文本）
+            // 不跟随 GDI+ 变换，会导致滚动后文字留在原位、与图形错位。
+            _canvas = new PageCanvas(this);
+            _canvas.BackColor = Theme.P.Bg;
+            Controls.Add(_canvas);
+            SyncCanvas();
+        }
+
+        /// <summary>内容画布（真实子控件）：所有绘制与命中都在画布坐标（= 内容坐标）中。</summary>
+        private sealed class PageCanvas : Panel
+        {
+            private readonly PageBase _owner;
+
+            public PageCanvas(PageBase owner)
+            {
+                _owner = owner;
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                    ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                DoubleBuffered = true;
+                TabStop = false;
+            }
+
+            protected override void OnPaintBackground(PaintEventArgs e)
+            {
+                e.Graphics.Clear(_owner.ThemePageBackground);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                _owner.PaintPage(e.Graphics);
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e) { _owner.DispatchMouseDown(e); }
+            protected override void OnMouseMove(MouseEventArgs e) { _owner.DispatchMouseMove(e); }
+            protected override void OnMouseUp(MouseEventArgs e) { _owner.DispatchMouseUp(e); }
+            protected override void OnMouseLeave(EventArgs e) { _owner.DispatchMouseLeave(e); }
+            protected override void OnMouseWheel(MouseEventArgs e) { _owner.ScrollByWheel(e.Delta); }
+        }
+
+        private Color ThemePageBackground { get { return Theme.P.Bg; } }
+
+        internal void PaintPage(Graphics g)
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            Ui.Prep(g);
+            if (Snap != null) Draw(g);
+            UiMetrics.RecordPaint(GetType().Name.Replace("Page", ""),
+                (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency);
+        }
+
+        internal void DispatchMouseDown(MouseEventArgs e) { OnMouseDown(e); }
+        internal void DispatchMouseMove(MouseEventArgs e) { OnMouseMove(e); }
+        internal void DispatchMouseUp(MouseEventArgs e) { OnMouseUp(e); }
+        internal void DispatchMouseLeave(EventArgs e) { OnMouseLeave(e); }
+
+        /// <summary>页面状态变化统一重绘画布（视口本身无内容）。</summary>
+        public new void Invalidate()
+        {
+            _canvas.Invalidate();
+        }
+
+        public new void Invalidate(Rectangle rc)
+        {
+            _canvas.Invalidate(rc);
+        }
+
+        /// <summary>同步画布尺寸与滚动位置（视口大小、内容高度、滚动值变化时调用）。</summary>
+        private void SyncCanvas()
+        {
+            int w = Math.Max(10, ClientSize.Width);
+            int h = Math.Max(ClientSize.Height, MinContentHeight);
+            _canvas.Bounds = new Rectangle(0, -_scrollY, w, h);
+        }
+
+        /// <summary>滚动位置变化（壳层据此重绘右侧自绘滚动条）。</summary>
+        public event Action ScrollChanged;
+
+        /// <summary>页面设计最小高度 = 默认窗口(1200×780)内容区高度；
+        /// 默认窗口下不出滚动条，窗口更小时内容按此高度布局并由壳层绘制滚动条。</summary>
+        protected virtual int MinContentHeight
+        {
+            get { return 686; }
+        }
+
+        /// <summary>布局用内容高度：始终 ≥ 视口高度，页面内所有纵向计算都应使用本属性。</summary>
+        protected int ContentH
+        {
+            get { return Math.Max(ClientSize.Height, MinContentHeight); }
+        }
+
+        /// <summary>布局用内容宽度：滚轮滚动条占据非客户区，右对齐元素必须按客户端宽度计算。</summary>
+        protected int ContentW
+        {
+            get { return ClientSize.Width; }
+        }
+
+        /// <summary>当前内容滚动偏移（0 表示顶部）。壳层绘制滚动条时读取。</summary>
+        public int ScrollOffset
+        {
+            get { return _scrollY; }
+        }
+
+        /// <summary>可滚动最大值（内容高 - 视口高）。</summary>
+        public int ScrollMax
+        {
+            get { return Math.Max(0, ContentH - ClientSize.Height); }
+        }
+
+        protected int ViewTop
+        {
+            get { return _scrollY; }
+        }
+
+        protected int ViewBottom
+        {
+            get { return _scrollY + ClientSize.Height; }
+        }
+
+        /// <summary>画布事件坐标已是内容坐标；保留本方法供页面统一调用（恒等映射）。</summary>
+        protected static Point ToContent(Point p)
+        {
+            return p;
+        }
+
+        /// <summary>屏幕光标 → 内容坐标（画布子控件坐标，已包含滚动偏移）。</summary>
+        protected Point CursorToContent()
+        {
+            return _canvas.PointToClient(Cursor.Position);
+        }
+
+        public void SetScrollOffset(int offset)
+        {
+            int max = ScrollMax;
+            if (offset < 0) offset = 0;
+            if (offset > max) offset = max;
+            if (offset == _scrollY) return;
+            _scrollY = offset;
+            _canvas.Top = -_scrollY;
+            _canvas.Invalidate();
+            if (ScrollChanged != null) ScrollChanged();
+        }
+
+        /// <summary>鼠标滚轮滚动（由 DashboardForm 转发；delta 为系统 Wheel 增量）。</summary>
+        public void ScrollByWheel(int delta)
+        {
+            SetScrollOffset(_scrollY - delta);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (_scrollY > ScrollMax) _scrollY = ScrollMax;
+            SyncCanvas();
+            if (ScrollChanged != null) ScrollChanged();
         }
 
         public static DateTime StartFor(RangeKind r)
@@ -56,13 +216,14 @@ namespace KeyInsight.UI.Pages
         public virtual void SetSnapshot(StatsSnapshot s)
         {
             Snap = s;
-            Invalidate();
+            _canvas.Invalidate();
         }
 
         public virtual void ApplyTheme()
         {
             BackColor = Theme.P.Bg;
-            Invalidate();
+            if (_canvas != null) _canvas.BackColor = Theme.P.Bg;
+            Invalidate(true);
         }
 
         protected void RequestData()
@@ -75,12 +236,7 @@ namespace KeyInsight.UI.Pages
             e.Graphics.Clear(Theme.P.Bg);
         }
 
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Ui.Prep(e.Graphics);
-            if (Snap == null) return;
-            Draw(e.Graphics);
-        }
+        // 绘制委托给 _canvas（PageCanvas.OnPaint → PaintPage），视口本身不绘制内容。
 
         protected abstract void Draw(Graphics g);
 

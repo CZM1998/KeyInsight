@@ -8,29 +8,29 @@ namespace KeyInsight.UI
 {
     public static class Ui
     {
-        public static readonly Font Body = new Font("Microsoft YaHei UI", 9F);
-        public static readonly Font BodySmall = new Font("Microsoft YaHei UI", 8.25F);
-        public static readonly Font Label = new Font("Microsoft YaHei UI", 8F);
-        public static readonly Font Section = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold);
-        public static readonly Font PageTitle = new Font("Microsoft YaHei UI", 19F, FontStyle.Bold);
+        public static readonly Font Body = new Font("Microsoft YaHei UI", 9.75F);
+        public static readonly Font BodySmall = new Font("Microsoft YaHei UI", 9F);
+        public static readonly Font Label = new Font("Microsoft YaHei UI", 8.5F);
+        public static readonly Font Section = new Font("Microsoft YaHei UI", 11.5F, FontStyle.Bold);
+        public static readonly Font PageTitle = new Font("Microsoft YaHei UI", 21F, FontStyle.Bold);
         public static readonly Font Nav = new Font("Microsoft YaHei UI", 10F);
         public static readonly Font NavBold = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
         public static readonly Font BrandTitle = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold);
         public static readonly Font AppTitle = new Font("Microsoft YaHei UI", 13F, FontStyle.Bold);
-        public static readonly Font CardValue = new Font("Segoe UI", 20F, FontStyle.Bold);
-        public static readonly Font CardValueSmall = new Font("Segoe UI", 16F, FontStyle.Bold);
+        public static readonly Font CardValue = new Font("Segoe UI", 24F, FontStyle.Bold);
+        public static readonly Font CardValueSmall = new Font("Segoe UI", 18F, FontStyle.Bold);
         public static readonly Font KeyFont = new Font("Microsoft YaHei UI", 7.8F, FontStyle.Bold);
         public static readonly Font KeyFontSmall = new Font("Microsoft YaHei UI", 6.8F, FontStyle.Bold);
-        public static readonly Font Mono = new Font("Consolas", 8.5F);
+        public static readonly Font Mono = new Font("Consolas", 9F);
         public static readonly Font Glyph = new Font("Segoe MDL2 Assets", 11F);
         public static readonly Font GlyphSmall = new Font("Segoe MDL2 Assets", 9F);
 
         public static void Prep(Graphics g)
         {
+            // PR-2：几何启用抗锯齿；不全局启用 HighQualityBicubic（仅位图缩放需要，
+            // 由具体绘制点按需设置）。文字走 TextRenderer，不受 Graphics 设置影响。
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         }
 
         public static GraphicsPath RoundRect(RectangleF r, float radius)
@@ -53,26 +53,19 @@ namespace KeyInsight.UI
         public static void FillRound(Graphics g, RectangleF r, float radius, Color color)
         {
             using (GraphicsPath path = RoundRect(r, radius))
-            using (SolidBrush b = new SolidBrush(color))
             {
-                g.FillPath(b, path);
+                g.FillPath(RenderResources.Brush(color), path);
             }
         }
 
         public static void FillPathColor(Graphics g, GraphicsPath path, Color color)
         {
-            using (SolidBrush b = new SolidBrush(color))
-            {
-                g.FillPath(b, path);
-            }
+            g.FillPath(RenderResources.Brush(color), path);
         }
 
         public static void StrokePath(Graphics g, GraphicsPath path, Color color, float width)
         {
-            using (Pen p = new Pen(color, width))
-            {
-                g.DrawPath(p, path);
-            }
+            g.DrawPath(RenderResources.Pen(color, width), path);
         }
 
         public static void StrokeRound(Graphics g, RectangleF r, float radius, Color color)
@@ -83,9 +76,8 @@ namespace KeyInsight.UI
         public static void StrokeRound(Graphics g, RectangleF r, float radius, Color color, float width)
         {
             using (GraphicsPath path = RoundRect(r, radius))
-            using (Pen p = new Pen(color, width))
             {
-                g.DrawPath(p, path);
+                g.DrawPath(RenderResources.Pen(color, width), path);
             }
         }
 
@@ -193,10 +185,7 @@ namespace KeyInsight.UI
 
         public static void DrawDot(Graphics g, int cx, int cy, int radius, Color color)
         {
-            using (SolidBrush b = new SolidBrush(color))
-            {
-                g.FillEllipse(b, cx - radius, cy - radius, radius * 2, radius * 2);
-            }
+            g.FillEllipse(RenderResources.Brush(color), cx - radius, cy - radius, radius * 2, radius * 2);
         }
     }
 }

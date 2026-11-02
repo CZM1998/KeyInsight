@@ -9,12 +9,33 @@ namespace KeyInsight.UI.Pages
 {
     public sealed class MousePage : PageBase
     {
-        public override string Title { get { return "鼠标统计"; } }
-        public override string Subtitle { get { return "鼠标点击、侧键与滚轮使用情况"; } }
+        private readonly IShellActions _shell;
+        private List<RankRow> _rows = new List<RankRow>();
+        private List<RankRow> _appRows = new List<RankRow>();
+        private long _wheelSum;
+        private long _clickSum;
+        private long _sideSum;
 
-        public MousePage()
+        public override string Title { get { return "鼠标统计"; } }
+        public override string Subtitle { get { return "鼠标点击、侧键与滚轮使用情况；微动异常仅检测不拦截"; } }
+
+        public MousePage(IShellActions shell)
         {
+            _shell = shell;
             Range = RangeKind.Week;
+        }
+
+        public override void SetSnapshot(StatsSnapshot s)
+        {
+            base.SetSnapshot(s);
+            // PR-2：排行/汇总在快照阶段计算，Draw 不再排序
+            _rows = MouseRows(s.Range.Mouse);
+            _appRows = AppRows(s.Range.Apps);
+            _wheelSum = WheelSum(s.Range.Mouse);
+            long clicks = 0;
+            for (int b = 1; b <= 5; b++) clicks += Count(s.Range.Mouse, b);
+            _clickSum = clicks;
+            _sideSum = Count(s.Range.Mouse, MouseIds.Back) + Count(s.Range.Mouse, MouseIds.Forward);
         }
 
         protected override void Draw(Graphics g)
@@ -30,7 +51,7 @@ namespace KeyInsight.UI.Pages
 
             int y = 100;
             int gap = 14;
-            int cardW = (Width - gap * 3) / 4;
+            int cardW = (ContentW - gap * 3) / 4;
             int cardH = 100;
 
             Charts.StatCard(g, new Rectangle(0, y, cardW, cardH), p, "今日点击", Charts.Number(today),
@@ -44,15 +65,15 @@ namespace KeyInsight.UI.Pages
                 Charts.Number(wheel), "上下左右滚动", p.Info);
 
             int contentY = y + cardH + gap;
-            int leftW = (int)(Width * 0.46);
-            int rightW = Width - leftW - gap;
+            int leftW = (int)(ContentW * 0.46);
+            int rightW = ContentW - leftW - gap;
             int midH = 276;
 
             SectionCard(g, new Rectangle(0, contentY, leftW, midH), "鼠标按键", "按使用频率着色");
             DrawMouse(g, new Rectangle(18, contentY + 56, leftW - 36, midH - 70), Snap.Range.Mouse, p);
 
             SectionCard(g, new Rectangle(leftW + gap, contentY, rightW, midH), "按键排行", "点击与滚轮次数");
-            List<RankRow> rows = MouseRows(Snap.Range.Mouse);
+            List<RankRow> rows = _rows;
             if (rows.Count == 0)
             {
                 Ui.TextCenter(g, "这个范围内还没有鼠标数据", Ui.BodySmall, p.Dim,
@@ -65,12 +86,12 @@ namespace KeyInsight.UI.Pages
             }
 
             int bottomY = contentY + midH + gap;
-            int bottomH = Height - bottomY;
-            int appsW = (int)(Width * 0.58);
-            int funW = Width - appsW - gap;
+            int bottomH = ContentH - bottomY;
+            int appsW = (int)(ContentW * 0.58);
+            int funW = ContentW - appsW - gap;
 
             SectionCard(g, new Rectangle(0, bottomY, appsW, bottomH), "Top 应用（鼠标点击）", "按前台应用统计点击与滚轮");
-            List<RankRow> apps = AppRows(Snap.Range.Apps);
+            List<RankRow> apps = _appRows;
             if (apps.Count == 0)
             {
                 Ui.TextCenter(g, "这个范围内还没有应用数据", Ui.BodySmall, p.Dim,
@@ -78,12 +99,16 @@ namespace KeyInsight.UI.Pages
             }
             else
             {
-                Charts.DrawRankList(g, new Rectangle(18, bottomY + 58, appsW - 36, bottomH - 96),
+                Charts.DrawRankList(g, new Rectangle(18, bottomY + 58, appsW - 36, bottomH - 120),
                     apps, p, Ui.BodySmall);
             }
             Ui.TextLeftEllipsis(g,
                 "Windows 只暴露 5 个鼠标键；更多侧键见键盘热力图。",
                 Ui.Label, p.Dim, new Rectangle(18, bottomY + bottomH - 24, appsW - 36, 18));
+            Ui.TextLeftEllipsis(g,
+                "V2 观察：原始滚轮 delta " + Charts.Number(_shell.MouseRawWheelDelta) +
+                " · 微动候选 " + Charts.Number(_shell.MouseCycleCandidates) + " 次（仅检测不拦截）",
+                Ui.Label, p.Dim, new Rectangle(18, bottomY + bottomH - 42, appsW - 36, 16));
 
             SectionCard(g, new Rectangle(appsW + gap, bottomY, funW, bottomH), "趣味换算", "按 1 格滚轮 ≈ 3 cm 估算");
             DrawFun(g, new Rectangle(appsW + gap + 18, bottomY + 56, funW - 36, bottomH - 70), p);
@@ -91,7 +116,7 @@ namespace KeyInsight.UI.Pages
 
         private void DrawFun(Graphics g, Rectangle r, Palette p)
         {
-            long ticks = WheelSum(Snap.Range.Mouse);
+            long ticks = _wheelSum;
             double meters = ticks * 0.03;
             string distance = meters >= 1000
                 ? (meters / 1000.0).ToString("F1") + " km"
@@ -103,19 +128,29 @@ namespace KeyInsight.UI.Pages
             else if (meters < 10000) scrollSub = "≈ " + (meters / 330.0).ToString("F1") + " 个埃菲尔铁塔";
             else scrollSub = "≈ 珠峰的 " + (meters / 8848.0 * 100).ToString("F1") + "%";
 
-            long clicks = 0;
-            for (int b = 1; b <= 5; b++) clicks += Count(Snap.Range.Mouse, b);
-            long side = Count(Snap.Range.Mouse, MouseIds.Back) + Count(Snap.Range.Mouse, MouseIds.Forward);
+            long clicks = _clickSum;
+            long side = _sideSum;
 
+            // PR-3：小窗口下按可用高度收敛行数，不溢出卡片
             int rowH = 36;
-            DrawFunRow(g, new Rectangle(r.X, r.Y, r.Width, rowH), p,
-                "滚轮距离", distance, scrollSub);
-            DrawFunRow(g, new Rectangle(r.X, r.Y + rowH, r.Width, rowH), p,
-                "鼠标点击", Charts.Number(clicks) + " 次",
-                clicks > 0 ? "≈ 每秒 2 次连点 " + Math.Max(1, (int)Math.Round(clicks / 120.0)) + " 分钟" : "还没有点击数据");
-            DrawFunRow(g, new Rectangle(r.X, r.Y + rowH * 2, r.Width, rowH), p,
-                "侧键 4/5", Charts.Number(side) + " 次",
-                side > 0 ? "≈ " + Charts.Number(side) + " 次网页前进/后退" : "还没有侧键数据");
+            int maxRows = Math.Max(1, r.Height / rowH);
+            if (maxRows >= 1)
+            {
+                DrawFunRow(g, new Rectangle(r.X, r.Y, r.Width, rowH), p,
+                    "滚轮距离", distance, scrollSub);
+            }
+            if (maxRows >= 2)
+            {
+                DrawFunRow(g, new Rectangle(r.X, r.Y + rowH, r.Width, rowH), p,
+                    "鼠标点击", Charts.Number(clicks) + " 次",
+                    clicks > 0 ? "≈ 每秒 2 次连点 " + Math.Max(1, (int)Math.Round(clicks / 120.0)) + " 分钟" : "还没有点击数据");
+            }
+            if (maxRows >= 3)
+            {
+                DrawFunRow(g, new Rectangle(r.X, r.Y + rowH * 2, r.Width, rowH), p,
+                    "侧键 4/5", Charts.Number(side) + " 次",
+                    side > 0 ? "≈ " + Charts.Number(side) + " 次网页前进/后退" : "还没有侧键数据");
+            }
         }
 
         private static void DrawFunRow(Graphics g, Rectangle r, Palette p, string label, string value, string sub)
@@ -449,7 +484,7 @@ namespace KeyInsight.UI.Pages
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button == MouseButtons.Left) HandleRangeClick(e.Location);
+            if (e.Button == MouseButtons.Left) HandleRangeClick(ToContent(e.Location));
         }
     }
 }

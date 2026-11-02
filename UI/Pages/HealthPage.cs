@@ -2,27 +2,61 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using KeyInsight.Core.Input;
+using KeyInsight.Core.Policy;
 using KeyInsight.Stats;
 
 namespace KeyInsight.UI.Pages
 {
     public sealed class HealthPage : PageBase
     {
+        private readonly IShellActions _shell;
         private int _selectedVk;
         private Rectangle[] _rowRects = new Rectangle[0];
         private int[] _rowVks = new int[0];
+        private Rectangle _switchPolicy;
+        private Rectangle[] _policyThRects = new Rectangle[0];
+        private Rectangle _wizardRect;
+        private Rectangle _simRect;
+        private Rectangle _maintainRect;
+        private Rectangle _revertRect;
+        private static readonly int[] PolicyThresholds = new int[] { 10, 15, 20, 25, 30 };
+        private int _overall;
+        private long _weekSwallowed;
+        private int _needCount;
 
         public override string Title { get { return "按键健康"; } }
-        public override string Subtitle { get { return "按抖动率、趋势与拦截次数评估键况"; } }
+        public override string Subtitle { get { return "按抖动率、趋势与拦截次数评估键况；可为单键启用保守过滤"; } }
 
-        public HealthPage()
+        public HealthPage(IShellActions shell)
         {
+            _shell = shell;
             Range = RangeKind.Month;
         }
 
         public override void SetSnapshot(StatsSnapshot s)
         {
             base.SetSnapshot(s);
+            // PR-2：综合健康分/周拦截/需关注计数在快照阶段计算
+            double weighted = 0;
+            long weight = 0;
+            long week = 0;
+            int need = 0;
+            int worst = 100;
+            foreach (KeyHealthRow row in s.KeyHealth)
+            {
+                weighted += row.Score * row.Total;
+                weight += row.Total;
+                week += row.Swallowed7;
+                if (row.Status >= 2) need++;
+                if (row.Score < worst) worst = row.Score;
+            }
+            _overall = weight > 0
+                ? (int)Math.Round((weighted / weight) * 0.6 + worst * 0.4)
+                : 100;
+            _weekSwallowed = week;
+            _needCount = need;
+
             bool found = false;
             for (int i = 0; i < s.KeyHealth.Count; i++)
             {
@@ -40,26 +74,13 @@ namespace KeyInsight.UI.Pages
             DrawHeader(g);
             DrawRangeChips(g, 0, 58);
 
-            double weighted = 0;
-            long weight = 0;
-            long week = 0;
-            int need = 0;
-            int worst = 100;
-            foreach (KeyHealthRow row in Snap.KeyHealth)
-            {
-                weighted += row.Score * row.Total;
-                weight += row.Total;
-                week += row.Swallowed7;
-                if (row.Status >= 2) need++;
-                if (row.Score < worst) worst = row.Score;
-            }
-            int overall = weight > 0
-                ? (int)Math.Round((weighted / weight) * 0.6 + worst * 0.4)
-                : 100;
+            int overall = _overall;
+            long week = _weekSwallowed;
+            int need = _needCount;
 
             int y = 100;
             int gap = 14;
-            int cardW = (Width - gap * 3) / 4;
+            int cardW = (ContentW - gap * 3) / 4;
             int cardH = 100;
             Color overallColor = StatusColor(overall >= 90 ? 0 : overall >= 70 ? 1 : overall >= 50 ? 2 : 3, p);
 
@@ -74,9 +95,9 @@ namespace KeyInsight.UI.Pages
                 Charts.Number(need), "警告或严重", need > 0 ? p.Bad : p.Good);
 
             int contentY = y + cardH + gap;
-            int leftW = (int)(Width * 0.44);
-            int rightW = Width - leftW - gap;
-            int midH = Height - contentY;
+            int leftW = (int)(ContentW * 0.44);
+            int rightW = ContentW - leftW - gap;
+            int midH = ContentH - contentY;
 
             SectionCard(g, new Rectangle(0, contentY, leftW, midH), "按键列表", "按健康分从低到高");
             DrawList(g, new Rectangle(18, contentY + 56, leftW - 36, midH - 70), p);
@@ -113,7 +134,7 @@ namespace KeyInsight.UI.Pages
 
                 bool selected = row.Vk == _selectedVk;
                 if (selected) Ui.FillRound(g, rect, 8, p.Selected);
-                else if (rect.Contains(PointToClient(Cursor.Position))) Ui.FillRound(g, rect, 8, p.Hover);
+                else if (rect.Contains(CursorToContent())) Ui.FillRound(g, rect, 8, p.Hover);
 
                 Color sc = StatusColor(row.Status, p);
                 Ui.DrawDot(g, rect.X + 10, rect.Y + rect.Height / 2, 4, sc);
@@ -157,10 +178,10 @@ namespace KeyInsight.UI.Pages
 
             DrawScoreRing(g, new Rectangle(card.Right - 96, card.Y + 54, 64, 64), row.Score, sc, p);
 
-            int sy = y + 66;
-            int gap = 8;
+            int sy = y + 62;
+            int gap = 6;
             int bw = (card.Width - 44 - gap) / 2;
-            int bh = 52;
+            int bh = 48;
             Mini(g, new Rectangle(x, sy, bw, bh), p, "按键次数", Charts.Number(row.Total), p.Accent1);
             Mini(g, new Rectangle(x + bw + gap, sy, bw, bh), p, "拦截次数", Charts.Number(row.Swallowed), p.Bad);
             Mini(g, new Rectangle(x, sy + bh + gap, bw, bh), p, "抖动率",
@@ -168,40 +189,122 @@ namespace KeyInsight.UI.Pages
             Mini(g, new Rectangle(x + bw + gap, sy + bh + gap, bw, bh), p, "最近 7 天",
                 Charts.Number(row.Swallowed7) + " 次", p.Accent2);
 
-            int chartY = sy + (bh + gap) * 2 + 6;
+            int labelY = sy + (bh + gap) * 2 + 4;
+            int policyTop = card.Bottom - 170;
+            int chartTop = labelY + 20;
+            int chartBottomLimit = policyTop - 28;
+            int chartH = chartBottomLimit - chartTop;
+            if (chartH < 36) chartH = 36;
+
             Ui.TextLeft(g, "最近 30 天抖动次数", Ui.BodySmall, p.Muted,
-                new Rectangle(x, chartY, card.Width - 44, 20));
-            int[] trend;
-            if (!Snap.KeySwallowTrend.TryGetValue(row.Vk, out trend)) trend = new int[30];
-            DrawTrend(g, new Rectangle(x, chartY + 22, card.Width - 44, 104), trend, Snap.KeyTrendStart, p);
-
-            int by = chartY + 22 + 104 + 8;
-            string first = row.FirstDay > 0 ? DayKeys.ToText(row.FirstDay) : "—";
-            string last = row.LastDay > 0 ? DayKeys.ToText(row.LastDay) : "—";
-            Ui.TextLeftEllipsis(g, "首次抖动 " + first + " · 最近 " + last, Ui.Label, p.Dim,
-                new Rectangle(x, by, card.Width - 44, 18));
-
+                new Rectangle(x, labelY, 200, 20));
             Color tc = p.Muted;
             string trendText;
             if (row.Swallowed7 > row.SwallowedPrev7 + 1)
             {
-                trendText = "↑ 本周 " + row.Swallowed7 + " 次 / 上周 " + row.SwallowedPrev7 + " 次，变多";
+                trendText = "↑ 本周 " + row.Swallowed7 + " / 上周 " + row.SwallowedPrev7 + "，变多";
                 tc = p.Bad;
             }
             else if (row.Swallowed7 < row.SwallowedPrev7 - 1)
             {
-                trendText = "↓ 本周 " + row.Swallowed7 + " 次 / 上周 " + row.SwallowedPrev7 + " 次，变少";
+                trendText = "↓ 本周 " + row.Swallowed7 + " / 上周 " + row.SwallowedPrev7 + "，变少";
                 tc = p.Good;
             }
             else
             {
-                trendText = "→ 本周 " + row.Swallowed7 + " 次 / 上周 " + row.SwallowedPrev7 + " 次，持平";
+                trendText = "→ 本周 " + row.Swallowed7 + " / 上周 " + row.SwallowedPrev7 + "，持平";
             }
-            Ui.TextLeft(g, trendText, Ui.Label, tc, new Rectangle(x, by + 20, card.Width - 44, 18));
+            Ui.TextRight(g, trendText, Ui.Label, tc, new Rectangle(x + 200, labelY, card.Width - 44 - 200, 20));
 
-            string advice = Advice(row);
-            Ui.TextLeftEllipsis(g, advice, Ui.BodySmall, p.Muted,
-                new Rectangle(x, by + 44, card.Width - 44, 40));
+            int[] trend;
+            if (!Snap.KeySwallowTrend.TryGetValue(row.Vk, out trend)) trend = new int[30];
+            DrawTrend(g, new Rectangle(x, chartTop, card.Width - 44, chartH), trend, Snap.KeyTrendStart, p);
+
+            Ui.TextLeftEllipsis(g, Advice(row), Ui.Label, p.Muted,
+                new Rectangle(x, chartTop + chartH + 4, card.Width - 44, 18));
+
+            DrawPolicySection(g, card, row, p);
+        }
+
+        private void DrawPolicySection(Graphics g, Rectangle card, KeyHealthRow row, Palette p)
+        {
+            int x = card.X + 22;
+            int w = card.Width - 44;
+            int policyY = card.Bottom - 170;
+
+            Ui.Divider(g, x, policyY, w, p);
+            policyY += 4;
+
+            KeyPolicyEntry entry = null;
+            if (_shell.KeyPolicies != null)
+            {
+                int scan = InputIdentityResolver.CanonicalScanFor(row.Vk);
+                entry = _shell.KeyPolicies.Find(row.Vk, scan, false);
+                if (entry == null) entry = _shell.KeyPolicies.FindByVirtualKey(row.Vk);
+            }
+            bool enabled = entry != null && entry.Enabled;
+            int threshold = entry != null ? entry.ThresholdMs : 20;
+
+            Ui.TextLeft(g, "单键保守过滤（仅此键）", Ui.Body, p.Text, new Rectangle(x, policyY, 220, 22));
+            _switchPolicy = new Rectangle(x + w - 44, policyY + 1, 44, 22);
+            Charts.Switch(g, _switchPolicy, enabled, p);
+
+            string modeHint = "策略模式：" + ModeText(_shell.PolicyStatus.Mode) +
+                (enabled ? " · 阈值 " + threshold + " ms" : "");
+            Ui.TextLeftEllipsis(g, modeHint, Ui.Label, p.Dim, new Rectangle(x, policyY + 24, w, 16));
+
+            Ui.TextLeft(g, "阈值", Ui.Label, p.Muted, new Rectangle(x, policyY + 44, 40, 18));
+            string[] labels = new string[PolicyThresholds.Length];
+            for (int i = 0; i < PolicyThresholds.Length; i++) labels[i] = PolicyThresholds[i] + "";
+            int sel = -1;
+            for (int i = 0; i < PolicyThresholds.Length; i++) if (PolicyThresholds[i] == threshold) sel = i;
+            int cx = x + 44;
+            _policyThRects = new Rectangle[PolicyThresholds.Length];
+            for (int i = 0; i < labels.Length; i++)
+            {
+                int bw = Ui.MeasureWidth(g, labels[i] + " ms", Ui.BodySmall) + 18;
+                Rectangle r = new Rectangle(cx, policyY + 40, bw, 24);
+                Charts.Chip(g, r, labels[i] + " ms", i == sel && enabled, p, Ui.BodySmall);
+                _policyThRects[i] = r;
+                cx += bw + 6;
+            }
+
+            int btnY = policyY + 72;
+            int bw2 = (w - 24) / 4;
+            _wizardRect = new Rectangle(x, btnY, bw2, 30);
+            _simRect = new Rectangle(x + bw2 + 8, btnY, bw2, 30);
+            _maintainRect = new Rectangle(x + (bw2 + 8) * 2, btnY, bw2, 30);
+            _revertRect = new Rectangle(x + (bw2 + 8) * 3, btnY, bw2, 30);
+            Charts.Button(g, _wizardRect, "诊断测试", true, p);
+            Charts.Button(g, _simRect, "策略模拟", false, p);
+            Charts.Button(g, _maintainRect, "记录维护", false, p);
+            bool canRevert = _shell.KeyPolicies != null && _shell.KeyPolicies.HasUndo;
+            Charts.Button(g, _revertRect, canRevert ? "回退上次" : "无可回退", false, p);
+
+            // 维护前后对比（P2-02）
+            List<MaintenanceEvent> events = MaintenanceStore.Load(_shell.MaintenanceDir);
+            MaintenanceEvent latest = null;
+            for (int i = events.Count - 1; i >= 0; i--)
+            {
+                if (events[i].Vk == row.Vk) { latest = events[i]; break; }
+            }
+            if (latest != null)
+            {
+                MaintenanceStore.BeforeAfter cmp = MaintenanceStore.Compare(row.Vk, latest, Snap);
+                string line = latest.LocalTime.ToString("MM-dd HH:mm") + " " + latest.ActionText + " · " + cmp.Verdict;
+                Ui.TextLeftEllipsis(g, line, Ui.Label, p.Dim,
+                    new Rectangle(x, card.Bottom - 24, w, 18));
+            }
+        }
+
+        private static string ModeText(PolicyMode mode)
+        {
+            switch (mode)
+            {
+                case PolicyMode.ObserveOnly: return "观察";
+                case PolicyMode.PerKeyConservative: return "单键保守";
+                default: return "兼容 v2.1";
+            }
         }
 
         private static void Mini(Graphics g, Rectangle r, Palette p, string label, string value, Color accent)
@@ -210,7 +313,7 @@ namespace KeyInsight.UI.Pages
             Ui.StrokeRound(g, r, 10, p.Border);
             Ui.FillRound(g, new RectangleF(r.X + 14, r.Y + 14, 3, 16), 1.5f, accent);
             Ui.TextLeft(g, label, Ui.Label, p.Muted, new Rectangle(r.X + 24, r.Y + 8, r.Width - 34, 18));
-            Ui.TextLeft(g, value, Ui.CardValueSmall, p.Text, new Rectangle(r.X + 24, r.Y + 26, r.Width - 34, 26));
+            Ui.TextLeft(g, value, Ui.CardValueSmall, p.Text, new Rectangle(r.X + 24, r.Y + 21, r.Width - 34, 28));
         }
 
         private static void DrawScoreRing(Graphics g, Rectangle r, int score, Color color, Palette p)
@@ -289,7 +392,7 @@ namespace KeyInsight.UI.Pages
             {
                 case 0: return p.Good;
                 case 1: return p.Warn;
-                case 2: return Color.FromArgb(251, 146, 60);
+                case 2: return Ui.Blend(p.Warn, p.Bad, 0.5f);
                 default: return p.Bad;
             }
         }
@@ -338,13 +441,99 @@ namespace KeyInsight.UI.Pages
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
-            if (HandleRangeClick(e.Location)) return;
-            int idx = HitRects(e.Location, _rowRects);
+            Point pt = ToContent(e.Location);
+            if (HandleRangeClick(pt)) return;
+            int idx = HitRects(pt, _rowRects);
             if (idx >= 0 && idx < _rowVks.Length)
             {
                 _selectedVk = _rowVks[idx];
                 Invalidate();
+                return;
             }
+
+            if (_shell.KeyPolicies == null) return;
+            KeyHealthRow row = Find(_selectedVk);
+            if (row == null) return;
+            int scan = InputIdentityResolver.CanonicalScanFor(row.Vk);
+
+            if (_switchPolicy.Contains(pt))
+            {
+                _shell.KeyPolicies.BeginEdit();
+                KeyPolicyEntry entry = _shell.KeyPolicies.GetOrCreate(row.Vk, scan, false);
+                entry.Enabled = !entry.Enabled;
+                entry.EnabledAtUtcTicks = entry.Enabled ? DateTime.UtcNow.Ticks : 0;
+                if (entry.ThresholdMs < 10 || entry.ThresholdMs > 30) entry.ThresholdMs = 20;
+                CommitPolicy();
+                return;
+            }
+            int th = HitRects(pt, _policyThRects);
+            if (th >= 0 && th < PolicyThresholds.Length)
+            {
+                _shell.KeyPolicies.BeginEdit();
+                KeyPolicyEntry entry = _shell.KeyPolicies.GetOrCreate(row.Vk, scan, false);
+                entry.ThresholdMs = PolicyThresholds[th];
+                entry.Enabled = true;
+                entry.EnabledAtUtcTicks = DateTime.UtcNow.Ticks;
+                CommitPolicy();
+                return;
+            }
+            if (_wizardRect.Contains(pt))
+            {
+                using (DiagnosisWizardForm f = new DiagnosisWizardForm(_shell, row.Vk))
+                {
+                    f.ShowDialog(FindForm());
+                }
+                Invalidate();
+                return;
+            }
+            if (_simRect.Contains(pt))
+            {
+                using (SimulationForm f = new SimulationForm(Snap, row.Vk))
+                {
+                    if (f.ShowDialog(FindForm()) == DialogResult.OK && f.AppliedThreshold > 0)
+                    {
+                        _shell.KeyPolicies.BeginEdit();
+                        KeyPolicyEntry entry = _shell.KeyPolicies.GetOrCreate(row.Vk, scan, false);
+                        entry.ThresholdMs = f.AppliedThreshold;
+                        entry.Enabled = true;
+                        entry.EnabledAtUtcTicks = DateTime.UtcNow.Ticks;
+                        CommitPolicy();
+                    }
+                }
+                Invalidate();
+                return;
+            }
+            if (_revertRect.Contains(pt))
+            {
+                if (_shell.KeyPolicies.Revert())
+                {
+                    _shell.RefreshPolicy();
+                    Invalidate();
+                }
+                return;
+            }
+            if (_maintainRect.Contains(pt))
+            {
+                using (MaintenanceForm f = new MaintenanceForm(row.Vk))
+                {
+                    if (f.ShowDialog(FindForm()) == DialogResult.OK)
+                    {
+                        MaintenanceEvent ev = new MaintenanceEvent();
+                        ev.TimeUtcTicks = DateTime.UtcNow.Ticks;
+                        ev.Vk = row.Vk;
+                        ev.Action = f.ActionKey;
+                        ev.Note = f.NoteText;
+                        MaintenanceStore.Append(_shell.MaintenanceDir, ev);
+                    }
+                }
+                Invalidate();
+            }
+        }
+
+        private void CommitPolicy()
+        {
+            _shell.RefreshPolicy();
+            Invalidate();
         }
     }
 }

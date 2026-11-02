@@ -11,6 +11,8 @@ namespace KeyInsight.UI.Pages
         private string _selected;
         private Rectangle[] _rowRects = new Rectangle[0];
         private string[] _rowKeys = new string[0];
+        private List<KeyValuePair<string, AppAgg>> _sorted = new List<KeyValuePair<string, AppAgg>>();
+        private long _maxTotal = 1;
 
         public override string Title { get { return "应用统计"; } }
         public override string Subtitle { get { return "按前台应用分组，看看时间和按键花在了哪里"; } }
@@ -23,6 +25,17 @@ namespace KeyInsight.UI.Pages
         public override void SetSnapshot(StatsSnapshot s)
         {
             base.SetSnapshot(s);
+            // PR-2：应用排序在快照阶段完成
+            _sorted = new List<KeyValuePair<string, AppAgg>>(s.Range.Apps);
+            _sorted.Sort(delegate(KeyValuePair<string, AppAgg> a, KeyValuePair<string, AppAgg> b)
+            {
+                return b.Value.Total.CompareTo(a.Value.Total);
+            });
+            _maxTotal = 1;
+            for (int i = 0; i < _sorted.Count; i++)
+            {
+                if (_sorted[i].Value.Total > _maxTotal) _maxTotal = _sorted[i].Value.Total;
+            }
             if (_selected == null || !s.Range.Apps.ContainsKey(_selected))
             {
                 _selected = TopApp(s.Range.Apps);
@@ -36,10 +49,10 @@ namespace KeyInsight.UI.Pages
             DrawRangeChips(g, 0, 58);
 
             int top = 100;
-            int leftW = (int)(Width * 0.44);
+            int leftW = (int)(ContentW * 0.44);
             int gap = 14;
-            int rightW = Width - leftW - gap;
-            int height = Height - top;
+            int rightW = ContentW - leftW - gap;
+            int height = ContentH - top;
 
             Rectangle listCard = new Rectangle(0, top, leftW, height);
             Rectangle detailCard = new Rectangle(leftW + gap, top, rightW, height);
@@ -50,11 +63,7 @@ namespace KeyInsight.UI.Pages
 
         private void DrawAppList(Graphics g, Rectangle r, Palette p)
         {
-            List<KeyValuePair<string, AppAgg>> list = new List<KeyValuePair<string, AppAgg>>(Snap.Range.Apps);
-            list.Sort(delegate(KeyValuePair<string, AppAgg> a, KeyValuePair<string, AppAgg> b)
-            {
-                return b.Value.Total.CompareTo(a.Value.Total);
-            });
+            List<KeyValuePair<string, AppAgg>> list = _sorted;
 
             List<string> keys = new List<string>();
             List<Rectangle> rects = new List<Rectangle>();
@@ -76,12 +85,7 @@ namespace KeyInsight.UI.Pages
                 return;
             }
 
-            long max = 1;
-            for (int i = 0; i < keys.Count; i++)
-            {
-                AppAgg a;
-                if (Snap.Range.Apps.TryGetValue(keys[i], out a) && a.Total > max) max = a.Total;
-            }
+            long max = _maxTotal;
             long total = Math.Max(1, Snap.Range.Total);
 
             for (int i = 0; i < keys.Count; i++)
@@ -90,7 +94,7 @@ namespace KeyInsight.UI.Pages
                 Rectangle row = _rowRects[i];
                 bool sel = keys[i] == _selected;
                 if (sel) Ui.FillRound(g, row, 8, p.Selected);
-                else if (row.Contains(PointToClient(Cursor.Position))) Ui.FillRound(g, row, 8, p.Hover);
+                else if (row.Contains(CursorToContent())) Ui.FillRound(g, row, 8, p.Hover);
 
                 Ui.TextRight(g, (i + 1).ToString(), Ui.Mono, p.Dim, new Rectangle(row.X + 2, row.Y, 22, row.Height));
                 int dotX = row.X + 30;
@@ -185,8 +189,9 @@ namespace KeyInsight.UI.Pages
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
-            if (HandleRangeClick(e.Location)) return;
-            int idx = HitRects(e.Location, _rowRects);
+            Point pt = ToContent(e.Location);
+            if (HandleRangeClick(pt)) return;
+            int idx = HitRects(pt, _rowRects);
             if (idx >= 0 && idx < _rowKeys.Length)
             {
                 _selected = _rowKeys[idx];

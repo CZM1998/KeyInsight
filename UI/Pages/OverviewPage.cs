@@ -7,6 +7,17 @@ namespace KeyInsight.UI.Pages
 {
     public sealed class OverviewPage : PageBase
     {
+        private List<RankRow> _topKeys = new List<RankRow>();
+        private List<RankRow> _topApps = new List<RankRow>();
+
+        public override void SetSnapshot(StatsSnapshot s)
+        {
+            base.SetSnapshot(s);
+            // PR-2：排序/Top N 预计算，Draw 只绘制（不得在 Paint 内排序）
+            _topKeys = TopKeyRows(s.Today.Keys, 8, false);
+            _topApps = TopAppRows(s.Today.Apps, 5, false);
+        }
+
         public override string Title { get { return "总览"; } }
         public override string Subtitle { get { return "今天的键盘使用情况与累计数据"; } }
         public override DateTime RangeStart { get { return DateTime.Today; } }
@@ -19,7 +30,7 @@ namespace KeyInsight.UI.Pages
 
             int y = 62;
             int gap = 14;
-            int cardW = (Width - gap * 4) / 5;
+            int cardW = (ContentW - gap * 4) / 5;
             int cardH = 106;
 
             long mouseToday = 0;
@@ -40,33 +51,31 @@ namespace KeyInsight.UI.Pages
                 Charts.Number(Snap.TotalAll), "≈ 写完 " + books.ToString("F1") + " 本 10 万字小说", p.Accent3);
 
             int top = y + cardH + gap;
-            int leftW = (int)(Width * 0.63);
-            int rightW = Width - leftW - gap;
-            int rowH = (Height - top - gap) / 2;
+            int leftW = (int)(ContentW * 0.63);
+            int rightW = ContentW - leftW - gap;
+            int rowH = (ContentH - top - gap) / 2;
             if (rowH < 200) rowH = 200;
 
             Rectangle hourCard = new Rectangle(0, top, leftW, rowH);
             Rectangle keyCard = new Rectangle(leftW + gap, top, rightW, rowH);
-            Rectangle recentCard = new Rectangle(0, top + rowH + gap, leftW, Height - (top + rowH + gap));
-            Rectangle appCard = new Rectangle(leftW + gap, top + rowH + gap, rightW, Height - (top + rowH + gap));
+            Rectangle recentCard = new Rectangle(0, top + rowH + gap, leftW, ContentH - (top + rowH + gap));
+            Rectangle appCard = new Rectangle(leftW + gap, top + rowH + gap, rightW, ContentH - (top + rowH + gap));
 
             SectionCard(g, hourCard, "今日活跃度（24 小时）", "每个小时的按键次数");
             Charts.DrawBars24(g, new Rectangle(hourCard.X + 12, hourCard.Y + 58, hourCard.Width - 24, hourCard.Height - 70), Snap.Today.Hours, p);
 
             SectionCard(g, keyCard, "最常用按键", "今日 Top 8");
-            List<RankRow> keys = TopKeyRows(Snap.Today.Keys, 8, false);
-            if (keys.Count == 0) Ui.TextCenter(g, "今天还没有按键数据", Ui.BodySmall, p.Dim,
+            if (_topKeys.Count == 0) Ui.TextCenter(g, "今天还没有按键数据", Ui.BodySmall, p.Dim,
                 new Rectangle(keyCard.X + 18, keyCard.Y + 90, keyCard.Width - 36, 40));
-            else Charts.DrawRankList(g, new Rectangle(keyCard.X + 18, keyCard.Y + 58, keyCard.Width - 36, keyCard.Height - 70), keys, p, Ui.BodySmall);
+            else Charts.DrawRankList(g, new Rectangle(keyCard.X + 18, keyCard.Y + 58, keyCard.Width - 36, keyCard.Height - 70), _topKeys, p, Ui.BodySmall);
 
             SectionCard(g, recentCard, "最近拦截", "被防抖吞掉的抖动事件");
             DrawRecent(g, new Rectangle(recentCard.X + 18, recentCard.Y + 52, recentCard.Width - 36, recentCard.Height - 64), p);
 
             SectionCard(g, appCard, "Top 应用", "今天按键最多的应用");
-            List<RankRow> apps = TopAppRows(Snap.Today.Apps, 5, false);
-            if (apps.Count == 0) Ui.TextCenter(g, "今天还没有应用数据", Ui.BodySmall, p.Dim,
+            if (_topApps.Count == 0) Ui.TextCenter(g, "今天还没有应用数据", Ui.BodySmall, p.Dim,
                 new Rectangle(appCard.X + 18, appCard.Y + 80, appCard.Width - 36, 40));
-            else Charts.DrawRankList(g, new Rectangle(appCard.X + 18, appCard.Y + 58, appCard.Width - 36, appCard.Height - 70), apps, p, Ui.BodySmall);
+            else Charts.DrawRankList(g, new Rectangle(appCard.X + 18, appCard.Y + 58, appCard.Width - 36, appCard.Height - 70), _topApps, p, Ui.BodySmall);
         }
 
         private void DrawRecent(Graphics g, Rectangle r, Palette p)

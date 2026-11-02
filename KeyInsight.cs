@@ -7,6 +7,8 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using KeyInsight.Core.Policy;
+using KeyInsight.Core.Telemetry;
 using KeyInsight.Hook;
 using KeyInsight.Stats;
 using KeyInsight.UI;
@@ -14,117 +16,6 @@ using KeyInsight.Update;
 
 namespace KeyInsight
 {
-    public sealed class Config
-    {
-        public int ThresholdMs = 25;
-        public bool Enabled = true;
-        public bool SkipInjected = true;
-        public bool LogSwallowed = true;
-        public bool LogAllKeys = false;
-        public int ThemeMode = 0;
-        public int KeyboardLayout = 1;
-        public bool AutoCheckUpdates = true;
-        public long LastUpdateCheckTicks = 0;
-
-        public static string ConfigPath
-        {
-            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "KeyInsight.ini"); }
-        }
-
-        public static Config Load()
-        {
-            Config c = new Config();
-            try
-            {
-                if (File.Exists(ConfigPath))
-                {
-                    c.Read(ConfigPath, false);
-                }
-                else
-                {
-                    string legacy = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\KeyDebounce\KeyDebounce.ini");
-                    if (File.Exists(legacy))
-                    {
-                        c.Enabled = true;
-                        c.Read(legacy, true);
-                    }
-                }
-            }
-            catch
-            {
-            }
-            return c;
-        }
-
-        private void Read(string path, bool legacy)
-        {
-            foreach (string raw in File.ReadAllLines(path))
-            {
-                string line = raw.Trim();
-                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
-                int eq = line.IndexOf('=');
-                if (eq <= 0) continue;
-                string key = line.Substring(0, eq).Trim().ToLowerInvariant();
-                string val = line.Substring(eq + 1).Trim();
-                int n;
-                switch (key)
-                {
-                    case "thresholdms":
-                        if (int.TryParse(val, out n)) ThresholdMs = Math.Max(1, Math.Min(100, n));
-                        break;
-                    case "enabled":
-                        if (!legacy) Enabled = val != "0";
-                        break;
-                    case "skipinjected":
-                        SkipInjected = val != "0";
-                        break;
-                    case "logswallowed":
-                        LogSwallowed = val != "0";
-                        break;
-                    case "logallkeys":
-                        LogAllKeys = val != "0";
-                        break;
-                    case "thememode":
-                        if (int.TryParse(val, out n)) ThemeMode = Math.Max(0, Math.Min(2, n));
-                        break;
-                    case "keyboardlayout":
-                        if (int.TryParse(val, out n)) KeyboardLayout = Math.Max(0, Math.Min(1, n));
-                        break;
-                    case "autocheckupdates":
-                        AutoCheckUpdates = val != "0";
-                        break;
-                    case "lastupdatecheck":
-                        long ticks;
-                        if (long.TryParse(val, out ticks)) LastUpdateCheckTicks = ticks;
-                        break;
-                }
-            }
-        }
-
-        public void Save()
-        {
-            try
-            {
-                File.WriteAllLines(ConfigPath, new string[]
-                {
-                    "# KeyInsight settings",
-                    "ThresholdMs=" + ThresholdMs,
-                    "Enabled=" + (Enabled ? 1 : 0),
-                    "SkipInjected=" + (SkipInjected ? 1 : 0),
-                    "LogSwallowed=" + (LogSwallowed ? 1 : 0),
-                    "LogAllKeys=" + (LogAllKeys ? 1 : 0),
-                    "ThemeMode=" + ThemeMode,
-                    "KeyboardLayout=" + KeyboardLayout,
-                    "AutoCheckUpdates=" + (AutoCheckUpdates ? 1 : 0),
-                    "LastUpdateCheck=" + LastUpdateCheckTicks
-                });
-            }
-            catch
-            {
-            }
-        }
-    }
-
     public static class AutoStartHelper
     {
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -182,18 +73,6 @@ namespace KeyInsight
         }
     }
 
-    public static class AppInfo
-    {
-        public static string Version
-        {
-            get
-            {
-                Version v = Assembly.GetExecutingAssembly().GetName().Version;
-                return v == null ? "0.0.0" : v.ToString(3);
-            }
-        }
-    }
-
     internal static class Program
     {
         [STAThread]
@@ -206,6 +85,21 @@ namespace KeyInsight
             if (args.Length >= 2 && string.Equals(args[0], "--screenshot", StringComparison.OrdinalIgnoreCase))
             {
                 return ScreenshotRunner.Run(args[1]);
+            }
+            if (args.Length >= 1 && string.Equals(args[0], "--migrate-data", StringComparison.OrdinalIgnoreCase))
+            {
+                return MigrateDataRunner.Run();
+            }
+            if (args.Length >= 3 && string.Equals(args[0], "--gen-data", StringComparison.OrdinalIgnoreCase))
+            {
+                int months = int.Parse(args[2]);
+                int perDay = args.Length >= 4 ? int.Parse(args[3]) : 3000;
+                PerfDataGenerator.Generate(args[1], months, perDay, 42);
+                return 0;
+            }
+            if (args.Length >= 2 && string.Equals(args[0], "--perf-report", StringComparison.OrdinalIgnoreCase))
+            {
+                return KeyInsight.Perf.PerfRunner.Run(args[1]);
             }
 
             bool created;
@@ -227,26 +121,39 @@ namespace KeyInsight
                 AutoStartHelper.MigrateLegacy();
                 cfg.Save();
 
-                string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
+                string profilesDir = DataPathResolver.ResolveProfilesDir(AppDomain.CurrentDomain.BaseDirectory);
+                KeyPolicyStore keyPolicies = new KeyPolicyStore(
+                    Path.Combine(profilesDir, "key-policies.v1.json"));
+                PolicyController.AttachStore(keyPolicies);
+                PolicyController.Refresh(cfg);
+
+                string dataDir = DataPathResolver.ResolveDataRoot(AppDomain.CurrentDomain.BaseDirectory);
                 StatsEngine stats = new StatsEngine(dataDir, "KeyInsight");
                 ForegroundTracker.Start();
 
-                DebounceHook hook = new DebounceHook(cfg, stats);
-                hook.Start();
-                MouseHook mouseHook = new MouseHook(cfg, stats);
-                mouseHook.Start();
+                StatsEngineSink sink = new StatsEngineSink(stats);
+                DebounceHook hook = new DebounceHook(cfg, sink);
+                MouseHook mouseHook = new MouseHook(cfg, sink);
+                HookSupervisor supervisor = new HookSupervisor(hook, mouseHook);
+                supervisor.StartAll();
+                RawInputTracker rawInput = new RawInputTracker(Path.Combine(dataDir, "v2"));
+                rawInput.Start();
 
                 try
                 {
-                    using (TrayContext tray = new TrayContext(cfg, stats, hook, mouseHook))
+                    using (TrayContext tray = new TrayContext(cfg, stats, hook, mouseHook,
+                        keyPolicies, rawInput, supervisor, sink))
                     {
                         Application.Run(tray);
                     }
                 }
                 finally
                 {
+                    supervisor.Dispose();
                     hook.Dispose();
                     mouseHook.Dispose();
+                    sink.Dispose();
+                    rawInput.Dispose();
                     stats.Dispose();
                     ForegroundTracker.Stop();
                 }
@@ -274,6 +181,11 @@ namespace KeyInsight
         private readonly StatsEngine _stats;
         private readonly DebounceHook _hook;
         private readonly MouseHook _mouseHook;
+        private readonly KeyPolicyStore _keyPolicies;
+        private readonly RawInputTracker _rawInput;
+        private readonly HookSupervisor _supervisor;
+        private readonly StatsEngineSink _sink;
+        private FloatingSummaryForm _floating;
         private readonly NotifyIcon _icon;
         private readonly ToolStripMenuItem _openItem;
         private readonly ToolStripMenuItem _toggleItem;
@@ -285,13 +197,19 @@ namespace KeyInsight
         private DashboardForm _form;
         private UpdateInfo _pendingUpdate;
         private bool _updateBusy;
+        private string _lastUpdateCheckResult;
 
-        public TrayContext(Config cfg, StatsEngine stats, DebounceHook hook, MouseHook mouseHook)
+        public TrayContext(Config cfg, StatsEngine stats, DebounceHook hook, MouseHook mouseHook,
+            KeyPolicyStore keyPolicies, RawInputTracker rawInput, HookSupervisor supervisor, StatsEngineSink sink)
         {
             _cfg = cfg;
             _stats = stats;
             _hook = hook;
             _mouseHook = mouseHook;
+            _keyPolicies = keyPolicies;
+            _rawInput = rawInput;
+            _supervisor = supervisor;
+            _sink = sink;
             _sync = SynchronizationContext.Current;
 
             ContextMenuStrip menu = new ContextMenuStrip();
@@ -304,8 +222,9 @@ namespace KeyInsight
             _toggleItem = new ToolStripMenuItem();
             _toggleItem.Click += delegate
             {
-                _cfg.Enabled = !_cfg.Enabled;
+                _cfg.FilterEnabled = !_cfg.FilterEnabled;
                 _cfg.Save();
+                PolicyController.Refresh(_cfg);
                 UpdateMenu();
                 if (_form != null && !_form.IsDisposed)
                 {
@@ -325,6 +244,7 @@ namespace KeyInsight
                 {
                     _cfg.ThresholdMs = ms;
                     _cfg.Save();
+                    PolicyController.Refresh(_cfg);
                     UpdateMenu();
                     if (_form != null && !_form.IsDisposed)
                     {
@@ -351,11 +271,10 @@ namespace KeyInsight
             ToolStripMenuItem reinstall = new ToolStripMenuItem("重新安装输入钩子");
             reinstall.Click += delegate
             {
-                bool ok = _hook.Restart();
-                bool mok = _mouseHook.Restart();
-                bool all = ok && mok;
-                _icon.ShowBalloonTip(2000, all ? "输入钩子已重新安装" : "重新安装失败",
-                    all ? "键盘防抖与鼠标统计已重新生效" : "请尝试以管理员身份运行",
+                string detail;
+                bool all = _supervisor.RestartAll(out detail);
+                _icon.ShowBalloonTip(2500, all ? "输入钩子已重新安装" : "重新安装失败",
+                    all ? "键盘防抖与鼠标统计已重新生效" : detail,
                     all ? ToolTipIcon.Info : ToolTipIcon.Error);
             };
             menu.Items.Add(reinstall);
@@ -381,10 +300,11 @@ namespace KeyInsight
 
             _timer = new System.Windows.Forms.Timer();
             _timer.Interval = 2000;
-            _timer.Tick += delegate { UpdateMenu(); };
+            _timer.Tick += delegate { UpdateMenu(); ApplyFloatingSummary(); };
             _timer.Start();
 
             UpdateMenu();
+            ApplyFloatingSummary();
             _icon.ShowBalloonTip(2500, "KeyInsight 已启动",
                 "防抖与按键统计正在运行，双击托盘图标打开面板", ToolTipIcon.Info);
 
@@ -418,7 +338,7 @@ namespace KeyInsight
             if (_form == null || _form.IsDisposed)
             {
                 _form = new DashboardForm(_stats, _cfg, _hook, _mouseHook,
-                    delegate { BeginUpdateCheck(true); });
+                    delegate { BeginUpdateCheck(true); }, _keyPolicies, _rawInput, _supervisor, _sink);
             }
             _form.Show();
             if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;
@@ -427,10 +347,35 @@ namespace KeyInsight
             _form.RefreshSnapshot();
         }
 
+        private void ApplyFloatingSummary()
+        {
+            try
+            {
+            if (_cfg.FloatingSummary)
+            {
+                if (_floating == null || _floating.IsDisposed)
+                {
+                    _floating = new FloatingSummaryForm(_stats, _cfg);
+                    _floating.Show();
+                }
+            }
+            else if (_floating != null)
+            {
+                _floating.StopUpdates();
+                _floating.Close();
+                _floating = null;
+            }
+            }
+            catch (Exception ex)
+            {
+                Program.LogError(ex);
+            }
+        }
+
         private void UpdateMenu()
         {
-            _toggleItem.Text = _cfg.Enabled ? "防抖：已开启" : "防抖：已关闭";
-            _toggleItem.Checked = _cfg.Enabled;
+            _toggleItem.Text = _cfg.FilterEnabled ? "防抖过滤：已开启" : "防抖过滤：已关闭（仍统计）";
+            _toggleItem.Checked = _cfg.FilterEnabled;
             _startupItem.Checked = AutoStartHelper.IsEnabled();
 
             for (int i = 0; i < _thresholdRoot.DropDownItems.Count; i++)
@@ -443,8 +388,10 @@ namespace KeyInsight
             long total, swallowed;
             _stats.GetTodayCounts(out total, out swallowed);
             long mouse = _stats.GetTodayMouseCount();
+            string hookState = _supervisor == null ? "" : " · " + _supervisor.StateText;
+            string dropped = _sink != null && _sink.DroppedCount > 0 ? " · 统计不完整" : "";
             _statusItem.Text = "今日 " + total.ToString("N0") + " 键 · 鼠标 " + mouse.ToString("N0") +
-                " 次 · 拦截 " + swallowed.ToString("N0");
+                " 次 · 拦截 " + swallowed.ToString("N0") + hookState + dropped;
 
             string text = "KeyInsight · 今日 " + total.ToString("N0") + " 键 · 鼠标 " + mouse.ToString("N0") +
                 " 次 · 拦截 " + _hook.SwallowedCount;
@@ -456,6 +403,8 @@ namespace KeyInsight
         {
             if (_updateBusy) return;
             _updateBusy = true;
+            _lastUpdateCheckResult = "正在检查更新…";
+            PostUpdateStateChanged();
             ThreadPool.QueueUserWorkItem(delegate
             {
                 try
@@ -466,13 +415,25 @@ namespace KeyInsight
 
                     if (info == null)
                     {
+                        _lastUpdateCheckResult = "检查失败：GitHub 返回异常";
                         if (manual)
                         {
-                            PostBalloon("已是最新版本", "当前 v" + UpdateService.CurrentVersion, ToolTipIcon.Info);
+                            PostBalloon("检查更新失败", "无法解析发布信息（GitHub 返回异常）", ToolTipIcon.Error);
+                        }
+                    }
+                    else if (info.UpToDate)
+                    {
+                        _lastUpdateCheckResult = "已是最新（最新发布 " + info.Tag + "）";
+                        if (manual)
+                        {
+                            PostBalloon("已是最新版本",
+                                "当前 v" + UpdateService.CurrentVersion + "（最新发布 " + info.Tag + "）",
+                                ToolTipIcon.Info);
                         }
                     }
                     else
                     {
+                        _lastUpdateCheckResult = "发现新版本 v" + info.Version;
                         _pendingUpdate = info;
                         PostBalloon("发现新版本 v" + info.Version,
                             manual ? "点击这里下载并安装" : "点击托盘气泡或右键检查更新",
@@ -486,11 +447,13 @@ namespace KeyInsight
                 }
                 catch (Exception ex)
                 {
+                    _lastUpdateCheckResult = "检查失败：" + ex.Message;
                     if (manual) PostBalloon("检查更新失败", ex.Message, ToolTipIcon.Error);
                 }
                 finally
                 {
                     _updateBusy = false;
+                    PostUpdateStateChanged();
                 }
             });
         }
@@ -522,10 +485,9 @@ namespace KeyInsight
 
         private void PromptInstall(string path, UpdateInfo info)
         {
-            DialogResult result = MessageBox.Show(
-                "新版本 v" + info.Version + " 已下载。\n\n是否立即安装？安装程序会关闭 KeyInsight，安装完成后自动重新启动。",
-                "KeyInsight 更新", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (result != DialogResult.Yes) return;
+            bool go = Dialogs.Confirm(null, "KeyInsight 更新",
+                "新版本 v" + info.Version + " 已下载。\n\n是否立即安装？安装程序会关闭 KeyInsight，安装完成后自动重新启动。");
+            if (!go) return;
 
             try
             {
@@ -534,9 +496,24 @@ namespace KeyInsight
             }
             catch (Exception ex)
             {
-                MessageBox.Show("启动安装程序失败：" + ex.Message, "KeyInsight",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Dialogs.Error(null, "启动安装程序失败", ex.Message);
             }
+        }
+
+        private void PostUpdateStateChanged()
+        {
+            if (_sync == null) return;
+            _sync.Post(delegate
+            {
+                try
+                {
+                    if (_form != null && !_form.IsDisposed)
+                    {
+                        _form.OnUpdateStateChanged(_updateBusy, _lastUpdateCheckResult);
+                    }
+                }
+                catch { }
+            }, null);
         }
 
         private void PostBalloon(string title, string text, ToolTipIcon icon)
@@ -554,12 +531,35 @@ namespace KeyInsight
             _timer.Stop();
             if (_form != null && !_form.IsDisposed) _form.ForceClose();
             _icon.Visible = false;
+            if (_floating != null) { _floating.StopUpdates(); _floating.Close(); _floating = null; }
             _hook.Dispose();
             _mouseHook.Dispose();
+            if (_rawInput != null) _rawInput.Dispose();
             _stats.Dispose();
             ForegroundTracker.Stop();
             _icon.Dispose();
             ExitThread();
+        }
+    }
+
+    /// <summary>--migrate-data：便携 → 安装数据布局的显式迁移（P0-06）。</summary>
+    internal static class MigrateDataRunner
+    {
+        public static int Run()
+        {
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            Console.WriteLine("source: " + exeDir);
+            Console.WriteLine("target: " + DataPathResolver.InstalledRoot);
+            MigrationResult r = DataMigrator.MigratePortableToInstalled(exeDir);
+            Console.WriteLine("ok=" + r.Ok + " alreadyMigrated=" + r.AlreadyMigrated + " : " + r.Message);
+            if (r.Files.Count > 0)
+            {
+                foreach (string f in r.Files) Console.WriteLine("  " + f);
+            }
+            if (!string.IsNullOrEmpty(r.ManifestPath)) Console.WriteLine("manifest: " + r.ManifestPath);
+            if (!string.IsNullOrEmpty(r.BackupDir)) Console.WriteLine("backup: " + r.BackupDir);
+            if (!r.Ok) Console.WriteLine("rollback: no marker written; source data untouched. Restore from backup dir if needed.");
+            return r.Ok ? 0 : 1;
         }
     }
 
@@ -647,136 +647,6 @@ namespace KeyInsight
             log.AppendLine(ok ? "SELFTEST OK" : "SELFTEST FAILED");
             try { File.WriteAllText(logPath, log.ToString()); } catch { }
             return ok ? 0 : 1;
-        }
-    }
-
-    internal static class ScreenshotRunner
-    {
-        public static int Run(string outDir)
-        {
-            StringBuilder log = new StringBuilder();
-            string dataDir = Path.Combine(Path.GetTempPath(), "KeyInsightDemo_" + Guid.NewGuid().ToString("N"));
-            DashboardForm form = null;
-            StatsEngine engine = null;
-            try
-            {
-                Directory.CreateDirectory(outDir);
-                Directory.CreateDirectory(dataDir);
-
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-
-                engine = new StatsEngine(dataDir, "KeyInsight");
-                Synthetic.Generate(engine, 120, 900, new Random(7), true);
-                engine.WaitIdle(60000);
-                engine.SaveAll();
-                engine.LoadAllMonths();
-
-                try
-                {
-                    string[] mf = Directory.GetFiles(dataDir, "*.kds");
-                    log.AppendLine("month files: " + string.Join(", ", mf));
-                    List<MonthInfo> mi = engine.GetMonths();
-                    string keys = "";
-                    for (int i = 0; i < mi.Count; i++) keys += (i > 0 ? ", " : "") + mi[i].Key + "=" + mi[i].Total;
-                    log.AppendLine("engine months: " + keys);
-                }
-                catch (Exception ex)
-                {
-                    log.AppendLine("month dump failed: " + ex.Message);
-                }
-
-                Config cfg = new Config();
-                cfg.Enabled = true;
-                cfg.ThresholdMs = 25;
-                cfg.SkipInjected = true;
-
-                form = new DashboardForm(engine, cfg, null, null, null);
-                form.ScreenshotMode = true;
-                form.ShowInTaskbar = false;
-                form.StartPosition = FormStartPosition.Manual;
-                form.Location = new Point(-5000, -5000);
-                form.Size = new Size(1200, 780);
-                form.Show();
-                Application.DoEvents();
-
-                string[] names = new string[] { "overview", "keyboard", "mouse", "apps", "time", "health", "debounce", "settings" };
-                for (int pass = 0; pass < 2; pass++)
-                {
-                    bool dark = pass == 0;
-                    Theme.ForceDark = dark;
-                    Theme.Refresh();
-                    form.ApplyTheme();
-                    for (int i = 0; i < names.Length; i++)
-                    {
-                        form.SelectPage(i);
-                        Application.DoEvents();
-                        Thread.Sleep(60);
-                        using (Bitmap bmp = new Bitmap(form.Width, form.Height))
-                        {
-                            form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
-                            bmp.Save(Path.Combine(outDir, (dark ? "dark-" : "light-") + names[i] + ".png"),
-                                ImageFormat.Png);
-                        }
-                    }
-                }
-
-                Theme.ForceDark = null;
-                Theme.Refresh();
-
-                Theme.ForceDark = true;
-                Theme.Refresh();
-                form.ApplyTheme();
-                form.PreviewKeyboardHover("E");
-                using (Bitmap bmp = new Bitmap(form.Width, form.Height))
-                {
-                    form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
-                    bmp.Save(Path.Combine(outDir, "dark-keyboard-hover.png"), ImageFormat.Png);
-                }
-                form.PreviewKeyboardHover(null);
-                Theme.ForceDark = null;
-                Theme.Refresh();
-
-                cfg.KeyboardLayout = 0;
-                for (int pass = 0; pass < 2; pass++)
-                {
-                    bool dark = pass == 0;
-                    Theme.ForceDark = dark;
-                    Theme.Refresh();
-                    form.ApplyTheme();
-                    form.SelectPage(1);
-                    Application.DoEvents();
-                    Thread.Sleep(60);
-                    using (Bitmap bmp = new Bitmap(form.Width, form.Height))
-                    {
-                        form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
-                        bmp.Save(Path.Combine(outDir, (dark ? "dark" : "light") + "-keyboard-87.png"),
-                            ImageFormat.Png);
-                    }
-                }
-                cfg.KeyboardLayout = 1;
-                Theme.ForceDark = null;
-                Theme.Refresh();
-                log.AppendLine("screenshots written to " + outDir);
-                return 0;
-            }
-            catch (Exception ex)
-            {
-                log.AppendLine("EXCEPTION: " + ex);
-                return 1;
-            }
-            finally
-            {
-                if (form != null)
-                {
-                    try { form.ForceClose(); } catch { }
-                    try { form.Dispose(); } catch { }
-                }
-                if (engine != null) engine.Dispose();
-                try { Directory.Delete(dataDir, true); } catch { }
-                try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screenshot.log"), log.ToString()); }
-                catch { }
-            }
         }
     }
 

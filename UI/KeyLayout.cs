@@ -54,6 +54,9 @@ namespace KeyInsight.UI
 
         public static KeyLayoutDef Layout87 { get; private set; }
         public static KeyLayoutDef Layout108 { get; private set; }
+        // P1-05：ISO 变体（左 Shift 变窄 + "<>" 键；右 Shift 相应缩短）
+        public static KeyLayoutDef Layout87Iso { get; private set; }
+        public static KeyLayoutDef Layout108Iso { get; private set; }
 
         static KeyLayout()
         {
@@ -63,6 +66,11 @@ namespace KeyInsight.UI
             List<KeyDef> list108 = new List<KeyDef>(list87);
             AddNumpad(list108);
             Layout108 = new KeyLayoutDef("108 键全尺寸", "108 键", 23.25f, list108);
+
+            List<KeyDef> list87Iso = BuildIsoVariant(list87);
+            Layout87Iso = new KeyLayoutDef("87 键 ISO", "87 ISO", 18.75f, list87Iso);
+            List<KeyDef> list108Iso = BuildIsoVariant(list108);
+            Layout108Iso = new KeyLayoutDef("108 键 ISO", "108 ISO", 23.25f, list108Iso);
 
             SetLabel(0x60, "Num 0"); SetLabel(0x61, "Num 1"); SetLabel(0x62, "Num 2");
             SetLabel(0x63, "Num 3"); SetLabel(0x64, "Num 4"); SetLabel(0x65, "Num 5");
@@ -138,6 +146,30 @@ namespace KeyInsight.UI
             Add(list, "↓", 16.75f, 5f, 1f, 0x28);
             Add(list, "→", 17.75f, 5f, 1f, 0x27);
 
+            return list;
+        }
+
+        /// <summary>ISO 变体：左 Shift 2.25u → 1.25u，插入 1u "&lt;&gt;" 键（VK_OEM_102），右 Shift 2.75u → 1.75u。</summary>
+        private static List<KeyDef> BuildIsoVariant(List<KeyDef> ansi)
+        {
+            List<KeyDef> list = new List<KeyDef>(ansi.Count + 1);
+            foreach (KeyDef k in ansi)
+            {
+                if (k.Y == 4f && k.X == 0f && Math.Abs(k.W - 2.25f) < 0.01f)
+                {
+                    list.Add(new KeyDef("Shift", 0f, 4f, 1.25f, 1f, true, new int[] { 0xA0 }));
+                    list.Add(new KeyDef("<>", 1.25f, 4f, 1f, 1f, false, new int[] { 0xE2 }));
+                }
+                else if (k.Y == 4f && k.X == 12.25f && Math.Abs(k.W - 2.75f) < 0.01f)
+                {
+                    list.Add(new KeyDef("Shift", 12.25f, 4f, 1.75f, 1f, true, new int[] { 0xA1 }));
+                }
+                else
+                {
+                    list.Add(k);
+                }
+            }
+            SetLabel(0xE2, "<>");
             return list;
         }
 

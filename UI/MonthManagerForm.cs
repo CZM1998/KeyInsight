@@ -100,13 +100,12 @@ namespace KeyInsight.UI
             }
             if (keys.Count == 0)
             {
-                MessageBox.Show(this, "请先勾选要删除的月份。", "KeyInsight",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Dialogs.Show(this, "提示", "请先勾选要删除的月份。");
                 return;
             }
 
-            if (MessageBox.Show(this, "确定删除选中的 " + keys.Count + " 个月份？此操作不可撤销。", "KeyInsight",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            if (!Dialogs.Confirm(this, "删除月份",
+                "确定删除选中的 " + keys.Count + " 个月份？此操作不可撤销。")) return;
 
             for (int i = 0; i < keys.Count; i++) _source.DeleteMonth(keys[i]);
             if (_changed != null) _changed();

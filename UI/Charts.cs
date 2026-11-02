@@ -16,6 +16,50 @@ namespace KeyInsight.UI
 
     public static class Charts
     {
+        // PR-2：键盘几何缓存（命中区域与绘制矩形同源）。键 = 布局名 + 绘制区域 + DPI。
+        private sealed class KeyGeometry
+        {
+            public Dictionary<KeyDef, RectangleF> Rects;
+        }
+
+        private static readonly Dictionary<string, KeyGeometry> _geomCache =
+            new Dictionary<string, KeyGeometry>(StringComparer.Ordinal);
+
+        private static KeyGeometry GetGeometry(Graphics g, Rectangle area, KeyLayoutDef layout)
+        {
+            string key = layout.Name + "|" + area.X + "," + area.Y + "," + area.Width + "," + area.Height +
+                "|" + Math.Round(g.DpiX);
+            KeyGeometry geom;
+            if (_geomCache.TryGetValue(key, out geom)) return geom;
+
+            if (_geomCache.Count > 6) _geomCache.Clear();
+            geom = new KeyGeometry();
+            geom.Rects = new Dictionary<KeyDef, RectangleF>(layout.Keys.Count);
+            float unit = Math.Min(area.Width / (layout.WidthUnits + 0.45f), area.Height / (KeyLayout.HeightUnits + 0.6f));
+            if (unit > 54f) unit = 54f;
+            float layoutW = layout.WidthUnits * unit;
+            float layoutH = KeyLayout.HeightUnits * unit;
+            float ox = area.X + (area.Width - layoutW) / 2f;
+            float oy = area.Y + (area.Height - layoutH) / 2f;
+            float gap = unit * 0.09f;
+            for (int i = 0; i < layout.Keys.Count; i++)
+            {
+                KeyDef k = layout.Keys[i];
+                geom.Rects[k] = new RectangleF(
+                    ox + k.X * unit + gap / 2f,
+                    oy + k.Y * unit + gap / 2f,
+                    k.W * unit - gap,
+                    k.H * unit - gap);
+            }
+            _geomCache[key] = geom;
+            return geom;
+        }
+
+        /// <summary>主题/DPI 变化后失效几何缓存。</summary>
+        public static void InvalidateGeometry()
+        {
+            _geomCache.Clear();
+        }
         public static string Number(long n)
         {
             return n.ToString("N0");
@@ -28,8 +72,8 @@ namespace KeyInsight.UI
 
         public static void Card(Graphics g, Rectangle r, Palette p)
         {
-            Ui.FillRound(g, r, 14, p.Card);
-            Ui.StrokeRound(g, r, 14, p.Border);
+            Ui.FillRound(g, r, 10, p.Card);
+            Ui.StrokeRound(g, r, 10, p.Border);
         }
 
         public static void StatCard(Graphics g, Rectangle r, Palette p, string label, string value, string sub, Color accent)
@@ -38,7 +82,7 @@ namespace KeyInsight.UI
             int pad = 18;
             Ui.FillRound(g, new RectangleF(r.X + pad, r.Y + 14, 4, 20), 2, accent);
             Ui.TextLeft(g, label, Ui.BodySmall, p.Muted, new Rectangle(r.X + pad + 12, r.Y + 11, r.Width - pad * 2 - 12, 22));
-            Ui.TextLeft(g, value, Ui.CardValue, p.Text, new Rectangle(r.X + pad, r.Y + 33, r.Width - pad * 2, 32));
+            Ui.TextLeft(g, value, Ui.CardValue, p.Text, new Rectangle(r.X + pad, r.Y + 30, r.Width - pad * 2, 38));
             if (!string.IsNullOrEmpty(sub))
             {
                 Ui.TextLeftEllipsis(g, sub, Ui.Label, p.Dim,
@@ -78,11 +122,8 @@ namespace KeyInsight.UI
                 if (bh > 0)
                 {
                     using (GraphicsPath path = Ui.RoundRect(br, Math.Min(4, barW / 2f)))
-                    using (LinearGradientBrush b = new LinearGradientBrush(
-                        new Rectangle(x, plot.Bottom - Math.Max(bh, 8), barW, Math.Max(bh, 8)),
-                        p.Accent2, p.Accent1, 90f))
                     {
-                        g.FillPath(b, path);
+                        g.FillPath(RenderResources.Brush(p.Accent1), path);
                     }
                 }
             }
@@ -134,12 +175,7 @@ namespace KeyInsight.UI
                 area.AddLines(pts);
                 area.AddLine(pts[pts.Length - 1].X, plot.Bottom, pts[0].X, plot.Bottom);
                 area.CloseFigure();
-                using (LinearGradientBrush b = new LinearGradientBrush(
-                    new Rectangle(plot.X, plot.Y, plot.Width, Math.Max(1, plot.Height)),
-                    Ui.WithAlpha(p.Accent1, 105), Ui.WithAlpha(p.Accent1, 0), 90f))
-                {
-                    g.FillPath(b, area);
-                }
+                g.FillPath(RenderResources.Brush(Ui.WithAlpha(p.Accent1, 40)), area);
             }
 
             using (Pen line = new Pen(p.Accent1, 2f))
@@ -252,25 +288,70 @@ namespace KeyInsight.UI
                 int bh = (int)Math.Round(r.Height * (hours[h] / (double)max));
                 if (hours[h] > 0 && bh < 2) bh = 2;
                 RectangleF br = new RectangleF(r.X + h * slot, r.Bottom - bh, barW, bh);
-                using (LinearGradientBrush b = new LinearGradientBrush(
-                    new Rectangle((int)br.X, r.Bottom - Math.Max(bh, 6), (int)br.Width, Math.Max(bh, 6)),
-                    p.Accent2, p.Accent1, 90f))
-                {
-                    g.FillRectangle(b, br);
-                }
+                g.FillRectangle(RenderResources.Brush(p.Accent1), br);
             }
+        }
+
+        /// <summary>
+        /// P1-03 图层版热力图：按任意指标字典（使用/候选/拦截）着色，不画红点。
+        /// values 以 VK 为键，多 VK 的键（左右 Shift 等）求和。
+        /// </summary>
+        public static Dictionary<KeyDef, RectangleF> DrawKeyboardValues(Graphics g, Rectangle area,
+            Dictionary<int, long> values, Palette p, KeyDef hover, KeyLayoutDef layout)
+        {
+            KeyGeometry geom = GetGeometry(g, area, layout);
+            Dictionary<KeyDef, RectangleF> hits = geom.Rects;
+            float unit = Math.Min(area.Width / (layout.WidthUnits + 0.45f), area.Height / (KeyLayout.HeightUnits + 0.6f));
+            if (unit > 54f) unit = 54f;
+
+            long max = 1;
+            List<KeyDef> keys = layout.Keys;
+            for (int i = 0; i < keys.Count; i++)
+            {
+                long n = ValueFor(keys[i], values);
+                if (n > max) max = n;
+            }
+
+            for (int i = 0; i < keys.Count; i++)
+            {
+                KeyDef key = keys[i];
+                long n = ValueFor(key, values);
+                double t = n <= 0 ? 0 : Math.Log(1 + n) / Math.Log(1 + max);
+                Color fill = n <= 0 ? p.HeatEmpty : p.HeatColor(t);
+                Color fg = n <= 0 ? p.Dim : p.TextOn(fill);
+
+                RectangleF rec = hits[key];
+
+                Ui.FillRound(g, rec, Math.Max(4, unit * 0.16f), fill);
+                bool isHover = hover == key;
+                if (isHover) Ui.StrokeRound(g, rec, Math.Max(4, unit * 0.16f), p.Accent1, 2f);
+                else if (n > 0) Ui.StrokeRound(g, rec, Math.Max(4, unit * 0.16f), Ui.WithAlpha(fg, 26), 1f);
+                else Ui.StrokeRound(g, rec, Math.Max(4, unit * 0.16f), p.Border, 1f);
+
+                Font font = key.SmallLabel ? Ui.KeyFontSmall : Ui.KeyFont;
+                Ui.TextCenter(g, key.Label, font, fg, Rectangle.Round(rec));
+            }
+            return hits;
+        }
+
+        private static long ValueFor(KeyDef key, Dictionary<int, long> values)
+        {
+            if (values == null) return 0;
+            long n = 0;
+            for (int i = 0; i < key.Vks.Length; i++)
+            {
+                long v;
+                if (values.TryGetValue(key.Vks[i], out v)) n += v;
+            }
+            return n;
         }
 
         public static Dictionary<KeyDef, RectangleF> DrawKeyboard(Graphics g, Rectangle area, Dictionary<int, KeyAgg> counts, Palette p, KeyDef hover, KeyLayoutDef layout)
         {
-            Dictionary<KeyDef, RectangleF> hits = new Dictionary<KeyDef, RectangleF>();
+            KeyGeometry geom = GetGeometry(g, area, layout);
+            Dictionary<KeyDef, RectangleF> hits = geom.Rects;
             float unit = Math.Min(area.Width / (layout.WidthUnits + 0.45f), area.Height / (KeyLayout.HeightUnits + 0.6f));
             if (unit > 54f) unit = 54f;
-            float layoutW = layout.WidthUnits * unit;
-            float layoutH = KeyLayout.HeightUnits * unit;
-            float ox = area.X + (area.Width - layoutW) / 2f;
-            float oy = area.Y + (area.Height - layoutH) / 2f;
-            float gap = unit * 0.09f;
 
             long max = 1;
             long maxSw = 1;
@@ -291,12 +372,7 @@ namespace KeyInsight.UI
                 Color fill = n <= 0 ? p.HeatEmpty : p.HeatColor(t);
                 Color fg = n <= 0 ? p.Dim : p.TextOn(fill);
 
-                RectangleF rec = new RectangleF(
-                    ox + key.X * unit + gap / 2f,
-                    oy + key.Y * unit + gap / 2f,
-                    key.W * unit - gap,
-                    key.H * unit - gap);
-                hits[key] = rec;
+                RectangleF rec = hits[key];
 
                 Ui.FillRound(g, rec, Math.Max(4, unit * 0.16f), fill);
                 bool isHover = hover == key;

@@ -11,6 +11,15 @@ namespace KeyInsight.UI.Pages
         private readonly IShellActions _shell;
         private Rectangle _switchRect;
         private Rectangle[] _thRects = new Rectangle[0];
+        private List<RankRow> _topKeys = new List<RankRow>();
+        private List<RankRow> _topApps = new List<RankRow>();
+
+        public override void SetSnapshot(StatsSnapshot s)
+        {
+            base.SetSnapshot(s);
+            _topKeys = TopKeyRows(s.Range.Keys, 8, true);
+            _topApps = TopAppRows(s.Range.Apps, 8, true);
+        }
         private static readonly int[] Windows = new int[] { 10, 15, 20, 25, 30 };
 
         public override string Title { get { return "防抖统计"; } }
@@ -30,7 +39,7 @@ namespace KeyInsight.UI.Pages
 
             int y = 100;
             int gap = 14;
-            int cardW = (Width - gap * 3) / 4;
+            int cardW = (ContentW - gap * 3) / 4;
             int cardH = 100;
 
             double rate = Snap.Range.Swallowed / (double)Math.Max(1, Snap.Range.Total + Snap.Range.Swallowed);
@@ -50,36 +59,34 @@ namespace KeyInsight.UI.Pages
 
             int rankY = y + cardH + gap;
             int rankH = 250;
-            int leftW = (int)(Width * 0.5) - gap / 2;
-            int rightW = Width - leftW - gap;
+            int leftW = (int)(ContentW * 0.5) - gap / 2;
+            int rightW = ContentW - leftW - gap;
 
             SectionCard(g, new Rectangle(0, rankY, leftW, rankH), "按键拦截排行", "按拦截次数排序");
-            List<RankRow> keys = TopKeyRows(Snap.Range.Keys, 8, true);
-            if (keys.Count == 0) Ui.TextCenter(g, "这个范围内没有拦截记录", Ui.BodySmall, p.Dim,
+            if (_topKeys.Count == 0) Ui.TextCenter(g, "这个范围内没有拦截记录", Ui.BodySmall, p.Dim,
                 new Rectangle(18, rankY + 90, leftW - 36, 40));
-            else Charts.DrawRankList(g, new Rectangle(18, rankY + 58, leftW - 36, rankH - 70), keys, p, Ui.BodySmall);
+            else Charts.DrawRankList(g, new Rectangle(18, rankY + 58, leftW - 36, rankH - 70), _topKeys, p, Ui.BodySmall);
 
             SectionCard(g, new Rectangle(leftW + gap, rankY, rightW, rankH), "应用拦截排行", "按应用统计");
-            List<RankRow> apps = TopAppRows(Snap.Range.Apps, 8, true);
-            if (apps.Count == 0) Ui.TextCenter(g, "这个范围内没有拦截记录", Ui.BodySmall, p.Dim,
+            if (_topApps.Count == 0) Ui.TextCenter(g, "这个范围内没有拦截记录", Ui.BodySmall, p.Dim,
                 new Rectangle(leftW + gap + 18, rankY + 90, rightW - 36, 40));
-            else Charts.DrawRankList(g, new Rectangle(leftW + gap + 18, rankY + 58, rightW - 36, rankH - 70), apps, p, Ui.BodySmall);
+            else Charts.DrawRankList(g, new Rectangle(leftW + gap + 18, rankY + 58, rightW - 36, rankH - 70), _topApps, p, Ui.BodySmall);
 
             int bottomY = rankY + rankH + gap;
-            int bottomH = Height - bottomY;
-            SectionCard(g, new Rectangle(0, bottomY, Width, bottomH), "防抖设置与实时拦截", "修改后立即生效");
+            int bottomH = ContentH - bottomY;
+            SectionCard(g, new Rectangle(0, bottomY, ContentW, bottomH), "防抖设置与实时拦截", "修改后立即生效");
             DrawSettings(g, new Rectangle(20, bottomY + 56, 440, bottomH - 70), p);
-            DrawLive(g, new Rectangle(Width / 2 + 20, bottomY + 56, Width / 2 - 40, bottomH - 70), p);
+            DrawLive(g, new Rectangle(ContentW / 2 + 20, bottomY + 56, ContentW / 2 - 40, bottomH - 70), p);
         }
 
         private void DrawSettings(Graphics g, Rectangle r, Palette p)
         {
-            bool on = _shell.Cfg.Enabled;
+            bool on = _shell.Cfg.FilterEnabled;
             _switchRect = new Rectangle(r.X, r.Y + 2, 44, 24);
             Charts.Switch(g, _switchRect, on, p);
-            Ui.TextLeft(g, on ? "防抖已开启" : "防抖已暂停", Ui.Body, on ? p.Good : p.Warn,
-                new Rectangle(r.X + 58, r.Y, 220, 26));
-            Ui.TextLeftEllipsis(g, "相同按键在窗口内重复按下会被吞掉", Ui.Label, p.Dim,
+            Ui.TextLeft(g, on ? "防抖过滤已开启" : "防抖过滤已关闭（仍统计）", Ui.Body, on ? p.Good : p.Warn,
+                new Rectangle(r.X + 58, r.Y, 260, 26));
+            Ui.TextLeftEllipsis(g, "仅控制过滤；关闭后仍继续记录按键统计", Ui.Label, p.Dim,
                 new Rectangle(r.X, r.Y + 30, r.Width, 18));
 
             Ui.TextLeft(g, "防抖窗口", Ui.BodySmall, p.Muted, new Rectangle(r.X, r.Y + 62, 100, 22));
@@ -105,7 +112,8 @@ namespace KeyInsight.UI.Pages
             }
 
             int rowH = 24;
-            int count = Math.Min(5, list.Count);
+            int maxRows = Math.Max(1, r.Height / rowH);
+            int count = Math.Min(Math.Min(5, maxRows), list.Count);
             for (int i = 0; i < count; i++)
             {
                 RecentSwallow s = list[i];
@@ -134,15 +142,16 @@ namespace KeyInsight.UI.Pages
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
-            if (HandleRangeClick(e.Location)) return;
+            Point pt = ToContent(e.Location);
+            if (HandleRangeClick(pt)) return;
 
-            if (_switchRect.Contains(e.Location))
+            if (_switchRect.Contains(pt))
             {
-                _shell.SetEnabled(!_shell.Cfg.Enabled);
+                _shell.SetEnabled(!_shell.Cfg.FilterEnabled);
                 Invalidate();
                 return;
             }
-            int idx = HitRects(e.Location, _thRects);
+            int idx = HitRects(pt, _thRects);
             if (idx >= 0 && idx < Windows.Length)
             {
                 _shell.SetThreshold(Windows[idx]);

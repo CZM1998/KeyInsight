@@ -18,6 +18,8 @@ namespace KeyInsight.Update
         public string InstallerName;
         public string ChecksumUrl;
         public string ReleaseUrl;
+        /// <summary>true = 远程无更新（本地版本已 >= 最新 release）。</summary>
+        public bool UpToDate;
     }
 
     public static class UpdateService
@@ -71,7 +73,20 @@ namespace KeyInsight.Update
             Version latest;
             if (!Version.TryParse(versionText, out latest)) return null;
             Version current = Assembly.GetExecutingAssembly().GetName().Version;
-            if (current != null && latest <= current) return null;
+            if (current != null && latest > current)
+            {
+                // 有更新：解析资产
+            }
+            else
+            {
+                // 本地版本 >= 远程：返回“本地更新”标记（开发版），UI 据此提示“已是最新/本地更新”
+                UpdateInfo local = new UpdateInfo();
+                local.Version = latest <= current ? current : latest;
+                local.Tag = tag;
+                local.ReleaseUrl = root.ContainsKey("html_url") ? root["html_url"] as string : null;
+                local.UpToDate = true;
+                return local;
+            }
 
             UpdateInfo info = new UpdateInfo();
             info.Version = latest;
