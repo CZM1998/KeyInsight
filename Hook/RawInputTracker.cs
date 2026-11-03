@@ -16,6 +16,8 @@ namespace KeyInsight.Hook
     /// </summary>
     public sealed class RawInputTracker : IDisposable
     {
+        /// <summary>设备集合变化回调（路线图 PR-1：设备数据版本）。</summary>
+        public Action DeviceSetChanged;
         private const int WM_INPUT = 0x00FF;
         private const int WM_QUIT = 0x0012;
         private const uint RID_INPUT = 0x10000003;
@@ -240,8 +242,13 @@ namespace KeyInsight.Hook
                         profile.FirstSeenUtcTicks = DateTime.UtcNow.Ticks;
                         _devices[id] = profile;
                     }
+                    bool isNew = profile.EventCount == 0;
                     profile.EventCount++;
                     profile.LastSeenUtcTicks = DateTime.UtcNow.Ticks;
+                    if (isNew && DeviceSetChanged != null)
+                    {
+                        try { DeviceSetChanged(); } catch { }
+                    }
                 }
             }
             finally

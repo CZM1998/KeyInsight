@@ -27,7 +27,7 @@ $png = Join-Path $root 'Assets\app256.png'
 $manifest = Join-Path $root 'app.manifest'
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.cs |
-    Where-Object { $_.FullName -notmatch '\\Assets\\|\\Tests\\|\\artifacts\\' } |
+    Where-Object { $_.FullName -notmatch '\\Assets\\|\\Tests\\|\\artifacts\\|\\Updater\\' } |
     ForEach-Object { $_.FullName }
 
 $args = @(
@@ -50,3 +50,21 @@ $args += $files
 & $csc $args
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ("built " + $out + " (" + (Get-Item $out).Length + " bytes)")
+
+# KeyInsight.Updater.exe: 独立更新器 Helper（路线图 PR-6）
+$updaterOut = Join-Path $root 'KeyInsight.Updater.exe'
+$updaterSrc = Join-Path $root 'Updater\UpdaterMain.cs'
+$updaterArgs = @(
+    '-nologo',
+    '-target:exe',
+    '-optimize+',
+    "-out:$updaterOut",
+    '-r:System.dll',
+    '-r:System.Core.dll',
+    '-r:System.IO.Compression.dll',
+    '-r:System.IO.Compression.FileSystem.dll',
+    $updaterSrc
+)
+& $csc $updaterArgs
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+

@@ -59,37 +59,36 @@ namespace KeyInsight.UI
         {
             Palette p = new Palette();
             p.Dark = true;
-            p.Bg = Color.FromArgb(0x17, 0x19, 0x1B);
-            p.Sidebar = Color.FromArgb(0x1F, 0x22, 0x25);
-            p.TitleBar = Color.FromArgb(0x17, 0x19, 0x1B);
-            p.Card = Color.FromArgb(0x25, 0x29, 0x2D);
-            p.CardAlt = Color.FromArgb(0x20, 0x24, 0x27);
-            p.Border = Color.FromArgb(0x35, 0x3A, 0x3F);
-            p.BorderStrong = Color.FromArgb(0x45, 0x4B, 0x50);
-            p.Text = Color.FromArgb(0xE8, 0xEA, 0xEC);
-            p.Muted = Color.FromArgb(0x9D, 0xA5, 0xAA);
-            p.Dim = Color.FromArgb(0x6E, 0x76, 0x7B);
-            // 主色保持蓝色系（设计指南的“低饱和”方向），而非文档示例的青绿。
-            p.Accent1 = Color.FromArgb(0x7F, 0xA3, 0xC8);
-            p.Accent2 = Color.FromArgb(0x5E, 0x82, 0xA8);
-            p.Accent3 = Color.FromArgb(0xA7, 0xC1, 0xDA);
-            p.Good = Color.FromArgb(0x6F, 0xA9, 0x8C);
-            p.Warn = Color.FromArgb(0xD2, 0xA6, 0x6D);
-            p.Bad = Color.FromArgb(0xC5, 0x6A, 0x65);
-            p.Info = Color.FromArgb(0x8A, 0xA6, 0xBC);
-            p.Hover = Color.FromArgb(0x2B, 0x30, 0x34);
-            p.Selected = Color.FromArgb(0x2E, 0x34, 0x38);
-            p.HeatEmpty = Color.FromArgb(0x22, 0x26, 0x2A);
+            p.Bg = Color.FromArgb(0x0D, 0x16, 0x26);
+            p.Sidebar = Color.FromArgb(0x11, 0x1F, 0x33);
+            p.TitleBar = Color.FromArgb(0x0D, 0x16, 0x26);
+            p.Card = Color.FromArgb(0x14, 0x24, 0x3A);
+            p.CardAlt = Color.FromArgb(0x11, 0x1E, 0x31);
+            p.Border = Color.FromArgb(0x30, 0x49, 0x67);
+            p.BorderStrong = Color.FromArgb(0x3F, 0x5C, 0x80);
+            p.Text = Color.FromArgb(0xEA, 0xF2, 0xFC);
+            p.Muted = Color.FromArgb(0xA7, 0xB9, 0xD0);
+            p.Dim = Color.FromArgb(0x74, 0x8A, 0xA5);
+            p.Accent1 = Color.FromArgb(0x4C, 0x8D, 0xFF);
+            p.Accent2 = Color.FromArgb(0x55, 0xC5, 0xD8);
+            p.Accent3 = Color.FromArgb(0x77, 0xAC, 0xFF);
+            p.Good = Color.FromArgb(0x54, 0xB9, 0x9B);
+            p.Warn = Color.FromArgb(0xE4, 0xB0, 0x5D);
+            p.Bad = Color.FromArgb(0xE4, 0x77, 0x7B);
+            p.Info = Color.FromArgb(0x55, 0xC5, 0xD8);
+            p.Hover = Color.FromArgb(0x1A, 0x2D, 0x48);
+            p.Selected = Color.FromArgb(0x1E, 0x33, 0x52);
+            p.HeatEmpty = Color.FromArgb(0x11, 0x1E, 0x31);
             p.Heat = new Color[]
             {
-                Color.FromArgb(0x26, 0x2B, 0x31),
-                Color.FromArgb(0x2E, 0x3A, 0x46),
-                Color.FromArgb(0x3B, 0x4E, 0x62),
-                Color.FromArgb(0x4D, 0x66, 0x85),
-                Color.FromArgb(0x62, 0x80, 0xA4),
-                Color.FromArgb(0x7F, 0xA3, 0xC8)
+                Color.FromArgb(0x14, 0x24, 0x3A),
+                Color.FromArgb(0x1B, 0x33, 0x55),
+                Color.FromArgb(0x27, 0x47, 0x74),
+                Color.FromArgb(0x35, 0x60, 0x96),
+                Color.FromArgb(0x45, 0x7C, 0xC2),
+                Color.FromArgb(0x4C, 0x8D, 0xFF)
             };
-            p.Grid = Color.FromArgb(0x2C, 0x31, 0x36);
+            p.Grid = Color.FromArgb(0x22, 0x36, 0x54);
             return p;
         }
 
@@ -97,36 +96,36 @@ namespace KeyInsight.UI
         {
             Palette p = new Palette();
             p.Dark = false;
-            p.Bg = Color.FromArgb(0xF4, 0xF3, 0xEF);
+            p.Bg = Color.FromArgb(0xF3, 0xF6, 0xFB);
             p.Sidebar = Color.FromArgb(0xFF, 0xFF, 0xFF);
             p.TitleBar = Color.FromArgb(0xFF, 0xFF, 0xFF);
             p.Card = Color.FromArgb(0xFF, 0xFF, 0xFF);
-            p.CardAlt = Color.FromArgb(0xF8, 0xF7, 0xF3);
-            p.Border = Color.FromArgb(0xE7, 0xE5, 0xDF);
-            p.BorderStrong = Color.FromArgb(0xD5, 0xD2, 0xCA);
-            p.Text = Color.FromArgb(0x28, 0x2D, 0x2C);
-            p.Muted = Color.FromArgb(0x74, 0x7C, 0x78);
-            p.Dim = Color.FromArgb(0xA3, 0xAA, 0xA6);
-            p.Accent1 = Color.FromArgb(0x4A, 0x6F, 0x94);
-            p.Accent2 = Color.FromArgb(0x3E, 0x5F, 0x80);
-            p.Accent3 = Color.FromArgb(0x7E, 0x9C, 0xB8);
-            p.Good = Color.FromArgb(0x4F, 0x8A, 0x6E);
-            p.Warn = Color.FromArgb(0xC4, 0x8E, 0x4D);
-            p.Bad = Color.FromArgb(0xB8, 0x5F, 0x5B);
-            p.Info = Color.FromArgb(0x5A, 0x7C, 0x98);
-            p.Hover = Color.FromArgb(0xF0, 0xEF, 0xEA);
-            p.Selected = Color.FromArgb(0xE9, 0xED, 0xE8);
-            p.HeatEmpty = Color.FromArgb(0xEC, 0xE9, 0xE2);
+            p.CardAlt = Color.FromArgb(0xF8, 0xFA, 0xFD);
+            p.Border = Color.FromArgb(0xD9, 0xE3, 0xEF);
+            p.BorderStrong = Color.FromArgb(0xC2, 0xD2, 0xE6);
+            p.Text = Color.FromArgb(0x1B, 0x2B, 0x40);
+            p.Muted = Color.FromArgb(0x66, 0x7A, 0x93);
+            p.Dim = Color.FromArgb(0x8C, 0x9D, 0xB5);
+            p.Accent1 = Color.FromArgb(0x34, 0x78, 0xE5);
+            p.Accent2 = Color.FromArgb(0x26, 0x8D, 0xAA);
+            p.Accent3 = Color.FromArgb(0x5A, 0x95, 0xF0);
+            p.Good = Color.FromArgb(0x26, 0x8A, 0x70);
+            p.Warn = Color.FromArgb(0xB6, 0x7A, 0x20);
+            p.Bad = Color.FromArgb(0xC6, 0x4F, 0x58);
+            p.Info = Color.FromArgb(0x26, 0x8D, 0xAA);
+            p.Hover = Color.FromArgb(0xEA, 0xF1, 0xFA);
+            p.Selected = Color.FromArgb(0xDD, 0xEA, 0xFB);
+            p.HeatEmpty = Color.FromArgb(0xEC, 0xF1, 0xF8);
             p.Heat = new Color[]
             {
-                Color.FromArgb(0xED, 0xEB, 0xE5),
-                Color.FromArgb(0xDC, 0xE4, 0xEC),
-                Color.FromArgb(0xC2, 0xD1, 0xDF),
-                Color.FromArgb(0xA2, 0xB9, 0xCE),
-                Color.FromArgb(0x7B, 0x99, 0xB5),
-                Color.FromArgb(0x4A, 0x6F, 0x94)
+                Color.FromArgb(0xEC, 0xF1, 0xF8),
+                Color.FromArgb(0xC8, 0xDA, 0xF3),
+                Color.FromArgb(0x9C, 0xBB, 0xE9),
+                Color.FromArgb(0x6F, 0x9F, 0xDE),
+                Color.FromArgb(0x4C, 0x8D, 0xFF),
+                Color.FromArgb(0x2E, 0x66, 0xC4)
             };
-            p.Grid = Color.FromArgb(0xE7, 0xE5, 0xDF);
+            p.Grid = Color.FromArgb(0xD9, 0xE3, 0xEF);
             return p;
         }
     }

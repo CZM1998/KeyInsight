@@ -45,6 +45,9 @@ namespace KeyInsight.Stats
         /// <summary>数据版本（每次 Apply 递增；UI 用于节流/过期判断）。</summary>
         public long DataVersion { get { return Interlocked.Read(ref _version); } }
 
+        /// <summary>分域数据版本（路线图 PR-1）。</summary>
+        public DataVersionManager Versions = new DataVersionManager();
+
         private static double TicksToMsLocal(long ticks)
         {
             return ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -201,7 +204,7 @@ namespace KeyInsight.Stats
 
             StatsSnapshot snap;
             long version = DataVersion;
-            string key = start.Ticks.ToString() + "|" + end.Ticks.ToString() + "|" + version.ToString();
+            string key = start.Ticks.ToString() + "|" + end.Ticks.ToString() + "|" + version.ToString() + "|" + Versions.SnapshotVersionKey();
             if (_snapCache.TryGetValue(key, out snap))
             {
                 Action<StatsSnapshot, long> cbHit = SnapshotBuilt;
@@ -241,12 +244,15 @@ namespace KeyInsight.Stats
 
         private void Drain()
         {
+            bool any = false;
             KeyEvent e;
             while (_queue.TryDequeue(out e))
             {
+                any = true;
                 try { Apply(e); }
                 catch (Exception ex) { LogError(ex); }
             }
+            if (any) Versions.BumpEvent();
             _idle.Set();
         }
 
@@ -499,6 +505,7 @@ namespace KeyInsight.Stats
                     }
                 }
                 _allLoaded = true;
+                Versions.BumpHistory();
             }
             catch
             {
@@ -1052,6 +1059,7 @@ namespace KeyInsight.Stats
                     _months.Remove(key);
                 }
             }
+            Versions.BumpHistory();
             InvalidateMonthCache();
         }
 
@@ -1079,6 +1087,7 @@ namespace KeyInsight.Stats
                 {
                 }
                 _gapHist.Clear();
+                Versions.BumpEpoch();
 
                 _months.Clear();
                 _recent.Clear();
