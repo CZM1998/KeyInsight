@@ -28,6 +28,10 @@ namespace KeyInsight.UI.Pages
         public override string Title { get { return "按键健康"; } }
         public override string Subtitle { get { return "按抖动率、趋势与拦截次数评估键况；可为单键启用保守过滤"; } }
 
+        // 详情卡需要：卡头 56 + 标题块 62 + 迷你卡 108 + 趋势标签 24 + 图表 + 建议行 22 + 策略区 170。
+        // 图表按 780 高度可得约 118px；686 高度时图表只剩 ~24px 并与策略区重叠（小窗挤压问题）。
+        protected override int MinContentHeight { get { return 780; } }
+
         public HealthPage(IShellActions shell)
         {
             _shell = shell;
@@ -192,9 +196,11 @@ namespace KeyInsight.UI.Pages
             int labelY = sy + (bh + gap) * 2 + 4;
             int policyTop = card.Bottom - 170;
             int chartTop = labelY + 20;
-            int chartBottomLimit = policyTop - 28;
-            int chartH = chartBottomLimit - chartTop;
+            // 图表底 = 策略区上沿 - 建议行空间；极小窗口时保底 36，但建议行永远钳在策略区上方，不重叠
+            int chartH = policyTop - 28 - chartTop;
             if (chartH < 36) chartH = 36;
+            int adviceY = chartTop + chartH + 4;
+            if (adviceY > policyTop - 20) adviceY = policyTop - 20;
 
             Ui.TextLeft(g, "最近 30 天抖动次数", Ui.BodySmall, p.Muted,
                 new Rectangle(x, labelY, 200, 20));

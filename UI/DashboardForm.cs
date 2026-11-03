@@ -683,18 +683,24 @@ namespace KeyInsight.UI
             if (_hoverMax) Ui.FillRound(g, _maxRect, 6, winHover);
             if (_hoverClose) Ui.FillRound(g, _closeRect, 6, p.Bad);
 
-            using (Pen pen = new Pen(_hoverClose ? Color.White : p.Muted, 1.5f))
+            // 三个图标独立取色：悬停关闭只允许关闭图标变白，
+            // 否则浅色主题下最小化/最大化图标也变成白色，在浅色标题栏上“消失”
+            using (Pen pen = new Pen(_hoverMin ? p.Text : p.Muted, 1.5f))
             {
                 int cx = _minRect.X + _minRect.Width / 2;
                 int cy = _minRect.Y + _minRect.Height / 2;
                 g.DrawLine(pen, cx - 5, cy, cx + 5, cy);
-
-                cx = _maxRect.X + _maxRect.Width / 2;
-                cy = _maxRect.Y + _maxRect.Height / 2;
+            }
+            using (Pen pen = new Pen(_hoverMax ? p.Text : p.Muted, 1.5f))
+            {
+                int cx = _maxRect.X + _maxRect.Width / 2;
+                int cy = _maxRect.Y + _maxRect.Height / 2;
                 g.DrawRectangle(pen, cx - 5, cy - 5, 10, 10);
-
-                cx = _closeRect.X + _closeRect.Width / 2;
-                cy = _closeRect.Y + _closeRect.Height / 2;
+            }
+            using (Pen pen = new Pen(_hoverClose ? Color.White : p.Muted, 1.5f))
+            {
+                int cx = _closeRect.X + _closeRect.Width / 2;
+                int cy = _closeRect.Y + _closeRect.Height / 2;
                 g.DrawLine(pen, cx - 5, cy - 5, cx + 5, cy + 5);
                 g.DrawLine(pen, cx + 5, cy - 5, cx - 5, cy + 5);
             }
