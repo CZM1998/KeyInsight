@@ -36,17 +36,22 @@ namespace KeyInsight.Update.Download
             public string Sha256;
             public string Error;
             public string ErrorCategory;
+            public string RouteName;        // 命中/失败的 URL 归属线路（官方 = ""）
+            public double TtfbMs;           // 首字节耗时（供线路评分）
+            public double BytesPerSec;      // 本次下载吞吐（供线路评分）
         }
 
         /// <summary>
         /// 下载 asset 到 staging，按 routeOrder 顺序尝试。文件名 = {assetId}-{sha256 前 12 位}.part，
         /// 完成后重命名为 fileName。整文件 SHA-256 校验在下载器内完成。
+        /// 复审方案 PR-4：官方 URL 失败后按内置镜像前缀展开候选（公共代理只搬运字节，
+        /// 校验规则完全一致——大小 + 整文件 SHA-256）。
         /// </summary>
         public DownloadResult Download(Update.Manifest.ManifestAsset asset, List<string> assetUrls,
             RouteCatalog catalog)
         {
             DownloadResult last = new DownloadResult { Error = "no urls", ErrorCategory = "NoRoute" };
-            foreach (string url in assetUrls)
+            foreach (string url in ExpandUrls(assetUrls, catalog))
             {
                 if (Cancelled != null && Cancelled())
                 {
@@ -58,24 +63,87 @@ namespace KeyInsight.Update.Download
                     continue;
                 }
 
-                DownloadResult r = DownloadFromOne(url, asset);
-                if (r.Ok) return r;
-
-                if (catalog != null)
+                DownloadResult r = DownloadFromOne(url, asset, RouteNameFor(catalog, url));
+                if (r.Ok)
                 {
-                    // 记录失败并尝试切换下一条 URL（同一资产在 manifest 内自带多线路 URL 列表）
+                    if (catalog != null && !string.IsNullOrEmpty(r.RouteName))
+                    {
+                        RouteEndpoint ep = FindRoute(catalog, r.RouteName);
+                        if (ep != null) catalog.HealthOf(ep).RecordSuccess(r.TtfbMs, r.BytesPerSec);
+                    }
+                    return r;
                 }
+
+                if (catalog != null && !string.IsNullOrEmpty(r.RouteName))
+                {
+                    RouteEndpoint ep = FindRoute(catalog, r.RouteName);
+                    if (ep != null) catalog.HealthOf(ep).RecordFailure(r.ErrorCategory);
+                }
+                Action<string> rs = RouteSwitched;
+                if (rs != null) { try { rs(HostOf(url)); } catch { } }
                 last = r;
             }
             return last;
         }
 
-        private DownloadResult DownloadFromOne(string url, Update.Manifest.ManifestAsset asset)
+        /// <summary>官方 URL 优先，其后按内置镜像前缀展开（同一资产字节，签名/哈希规则相同）。</summary>
+        internal static List<string> ExpandUrls(List<string> assetUrls, RouteCatalog catalog)
+        {
+            List<string> urls = new List<string>();
+            if (assetUrls != null) urls.AddRange(assetUrls);
+            if (catalog != null)
+            {
+                foreach (RouteEndpoint route in catalog.OrderedAvailableRoutes())
+                {
+                    if (string.IsNullOrEmpty(route.UrlPrefix)) continue;
+                    foreach (string url in assetUrls)
+                    {
+                        // 官方 github.com 直链才套前缀；镜像自身 URL 不再嵌套
+                        if (url.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase) ||
+                            url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase) ||
+                            url.StartsWith("https://release-assets.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            urls.Add(route.UrlPrefix + url);
+                        }
+                    }
+                }
+            }
+            return urls;
+        }
+
+        private static RouteEndpoint FindRoute(RouteCatalog catalog, string name)
+        {
+            foreach (RouteEndpoint r in catalog.Routes)
+            {
+                if (string.Equals(r.Name, name, StringComparison.Ordinal)) return r;
+            }
+            return null;
+        }
+
+        /// <summary>URL → 归属线路名：命中镜像前缀返回该镜像，官方直链返回 ""。</summary>
+        private static string RouteNameFor(RouteCatalog catalog, string url)
+        {
+            if (catalog == null) return "";
+            foreach (RouteEndpoint r in catalog.Routes)
+            {
+                if (!string.IsNullOrEmpty(r.UrlPrefix) &&
+                    url.StartsWith(r.UrlPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return r.Name;
+                }
+            }
+            return "";
+        }
+
+        private DownloadResult DownloadFromOneInner(string url, Update.Manifest.ManifestAsset asset)
         {
             string tempPath = Path.Combine(StagingDir,
                 asset.Id + "-" + asset.Sha256.Substring(0, 12) + ".part");
             long existing = File.Exists(tempPath) ? new FileInfo(tempPath).Length : 0;
             if (existing > asset.Size) existing = 0;
+            Stopwatch dlClock = Stopwatch.StartNew();
+            double ttfbMs = -1;
+            long transferred = 0;
 
             try
             {
@@ -87,6 +155,7 @@ namespace KeyInsight.Update.Download
 
                 using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                 {
+                    ttfbMs = dlClock.Elapsed.TotalMilliseconds;
                     // 服务器忽略 Range 时返回 200 全量：从零开始
                     long startOffset = existing;
                     if ((int)resp.StatusCode == 200) startOffset = 0;
@@ -124,6 +193,7 @@ namespace KeyInsight.Update.Download
                                 try { Progress(done, total); } catch { }
                             }
                         }
+                        transferred = done;
                     }
 
                     long actualSize = new FileInfo(tempPath).Length;
@@ -150,7 +220,15 @@ namespace KeyInsight.Update.Download
                     string finalPath = Path.Combine(StagingDir, asset.FileName);
                     if (File.Exists(finalPath)) File.Delete(finalPath);
                     File.Move(tempPath, finalPath);
-                    return new DownloadResult { Ok = true, FilePath = finalPath, Sha256 = sha };
+                    return new DownloadResult
+                    {
+                        Ok = true,
+                        FilePath = finalPath,
+                        Sha256 = sha,
+                        TtfbMs = ttfbMs,
+                        BytesPerSec = transferred <= 0 ? -1
+                            : transferred / Math.Max(0.001, dlClock.Elapsed.TotalSeconds)
+                    };
                 }
             }
             catch (Exception ex)
@@ -158,9 +236,18 @@ namespace KeyInsight.Update.Download
                 return new DownloadResult
                 {
                     Error = ex.Message,
-                    ErrorCategory = RouteHealth.ClassifyError(ex)
+                    ErrorCategory = RouteHealth.ClassifyError(ex),
+                    TtfbMs = ttfbMs
                 };
             }
+        }
+
+        /// <summary>套上线路归属（官方直链 RouteName = ""），供健康统计记账。</summary>
+        private DownloadResult DownloadFromOne(string url, Update.Manifest.ManifestAsset asset, string routeName)
+        {
+            DownloadResult r = DownloadFromOneInner(url, asset);
+            r.RouteName = routeName ?? "";
+            return r;
         }
 
         private static string HostOf(string url)

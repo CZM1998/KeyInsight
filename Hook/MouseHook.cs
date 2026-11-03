@@ -106,6 +106,10 @@ namespace KeyInsight.Hook
         private long _cycleCandidates;
         private long _rawWheelDelta;                             // 原始 delta 累计（正负抵消后的净滚动量，V2 口径）
         private long _rawWheelEvents;
+        // 复审方案 PR-1：高分辨率滚轮累计器。逐事件 Abs(d)/120 会把 <120 的小步抬成 1 格；
+        // 改为按方向累计原始 delta，满 120 才出 1 刻度，余数保留在累计器中。
+        private readonly WheelAccumulator _wheelAccV = new WheelAccumulator();
+        private readonly WheelAccumulator _wheelAccH = new WheelAccumulator();
 
         public MouseHook(Config cfg, StatsEngine stats)
             : this(cfg, stats == null ? null : (ITelemetrySink)new StatsEngineSink(stats))
@@ -256,20 +260,32 @@ namespace KeyInsight.Hook
                     else if (msg == WM_MOUSEWHEEL)
                     {
                         int d = (short)((m.mouseData >> 16) & 0xFFFF);
-                        int ticks = Math.Abs(d) / 120;
-                        if (ticks == 0) ticks = 1;
-                        button = d >= 0 ? MouseIds.WheelUp : MouseIds.WheelDown;
-                        delta = ticks;
                         rawDelta = d;
+                        // 累计器换算：余数保留，满 120 才出刻度（复审方案 §2.4）
+                        int ticks = _wheelAccV.Feed(d);
+                        if (ticks != 0)
+                        {
+                            button = ticks > 0 ? MouseIds.WheelUp : MouseIds.WheelDown;
+                            delta = Math.Abs(ticks);
+                        }
                     }
                     else if (msg == WM_MOUSEHWHEEL)
                     {
                         int d = (short)((m.mouseData >> 16) & 0xFFFF);
-                        int ticks = Math.Abs(d) / 120;
-                        if (ticks == 0) ticks = 1;
-                        button = d >= 0 ? MouseIds.WheelRight : MouseIds.WheelLeft;
-                        delta = ticks;
                         rawDelta = d;
+                        int ticks = _wheelAccH.Feed(d);
+                        if (ticks != 0)
+                        {
+                            button = ticks > 0 ? MouseIds.WheelRight : MouseIds.WheelLeft;
+                            delta = Math.Abs(ticks);
+                        }
+                    }
+
+                    // V2 口径：原始滚轮 delta（高分辨率小滚动也计入；余数不足 120 不发刻度事件）
+                    if (isWheel)
+                    {
+                        Interlocked.Increment(ref _rawWheelEvents);
+                        Interlocked.Add(ref _rawWheelDelta, rawDelta);
                     }
 
                     if (button > 0)
@@ -279,13 +295,6 @@ namespace KeyInsight.Hook
                         {
                             _lastDownTicks[button] = Stopwatch.GetTimestamp();
                             _isDown[button] = true;
-                        }
-
-                        // V2 口径：原始滚轮 delta（保留高分辨率小滚动；旧 MB 格口累计不动）
-                        if (isWheel)
-                        {
-                            Interlocked.Increment(ref _rawWheelEvents);
-                            Interlocked.Add(ref _rawWheelDelta, rawDelta);
                         }
 
                         if (_sink != null)
@@ -299,19 +308,20 @@ namespace KeyInsight.Hook
                             e.UtcTicks = utcTicks;
                             e.App = app;
                             _sink.TryPublish(e);
-                            if (isWheel)
-                            {
-                                // P2-03：原始 delta 单独一路（高分辨率滚轮保留小步滚动）
-                                TelemetryEvent raw = new TelemetryEvent();
-                                raw.Kind = TelemetryKind.WheelRaw;
-                                raw.Delta = rawDelta;
-                                raw.UtcTicks = utcTicks;
-                                raw.App = app;
-                                _sink.TryPublish(raw);
-                            }
                             long n = Interlocked.Increment(ref _events);
                             if (n == 1) Log("first event button=" + button + " app=" + app);
                         }
+                    }
+
+                    // P2-03：原始 delta 单独一路（高分辨率滚轮保留小步滚动；与刻度换算解耦）
+                    if (isWheel && _sink != null)
+                    {
+                        TelemetryEvent raw = new TelemetryEvent();
+                        raw.Kind = TelemetryKind.WheelRaw;
+                        raw.Delta = rawDelta;
+                        raw.UtcTicks = WallClock.UtcNow.Ticks;
+                        raw.App = ForegroundTracker.CurrentApp;
+                        _sink.TryPublish(raw);
                     }
                 }
             }

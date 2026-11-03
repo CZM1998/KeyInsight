@@ -28,8 +28,9 @@ namespace KeyInsight.Update.Routing
     public sealed class RouteEndpoint
     {
         public string Name;
-        public string ManifestUrl;          // manifest.json（元数据线路）
+        public string ManifestUrl;          // manifest（元数据线路；固定名 Release 资产或 raw 清单）
         public string AssetBaseUrl;         // 资产基础路径（大文件线路）
+        public string UrlPrefix;            // 公共代理前缀：资产 URL = 前缀 + 官方完整 URL（可为 null）
         public RouteKind Kind;
         public bool IsOfficialSource;       // GitHub 官方源（回源）
 
@@ -212,15 +213,40 @@ namespace KeyInsight.Update.Routing
     /// </summary>
     public sealed class RouteCatalog
     {
-        /// <summary>可信 Host allowlist（全部 HTTPS）。用户配置的自有 CDN 域名可经配置追加。</summary>
+        /// <summary>
+        /// 可信 Host allowlist（全部 HTTPS）。公共代理仅作传输通道（复审方案 §3.2/§3.3），
+        /// 用户配置的自有 CDN 域名可经配置追加。
+        /// </summary>
         public static readonly string[] AllowedHosts = new string[]
         {
             "raw.githubusercontent.com",
             "github.com",
             "objects.githubusercontent.com",
             "api.github.com",
-            "release-assets.githubusercontent.com"
+            "release-assets.githubusercontent.com",
+            // 内置候选镜像池（第三方公共代理，不保证长期可用；运行时探测+熔断）
+            "ghfast.top",
+            "gh-proxy.com",
+            "gh.llkk.cc",
+            "ghproxy.net"
         };
+
+        /// <summary>官方 release latest 固定名清单资产（复审方案 §3.3：不依赖 api.github.com）。</summary>
+        public const string RepoOwner = "CZM1998";
+        public const string RepoName = "KeyInsight";
+        public const string UpdateAssetName = "KeyInsight-update.json";
+        public const string UpdateSigName = "KeyInsight-update.sig";
+
+        public static string OfficialManifestUrl
+        {
+            get { return "https://github.com/" + RepoOwner + "/" + RepoName +
+                         "/releases/latest/download/" + UpdateAssetName; }
+        }
+
+        public static string OfficialAssetBase
+        {
+            get { return "https://github.com/" + RepoOwner + "/" + RepoName + "/releases/download/"; }
+        }
 
         private readonly List<RouteEndpoint> _routes = new List<RouteEndpoint>();
         private readonly Dictionary<string, RouteHealth> _health = new Dictionary<string, RouteHealth>();
@@ -235,15 +261,43 @@ namespace KeyInsight.Update.Routing
 
         private void AddBootstrapRoutes()
         {
-            // 内置 bootstrap 路线（路线图附录 B：客户端保留内置路线，避免远端移除所有有效路线）。
-            // 自有域名/OSS 镜像上线后在此追加或通过受签名清单下发。
+            // 内置 bootstrap 路线（复审方案 §3.1/§3.3）：
+            // 版本发现 = Release latest 固定名静态清单（官方 + 公共代理前缀）；
+            // 下载 = 官方直链优先，公共代理按前缀展开为候选 URL。
+            // 公共代理是第三方公益服务，仅作候选；运行时探测 + 熔断决定顺序。
+            _routes.Add(new RouteEndpoint
+            {
+                Name = "release-official",
+                ManifestUrl = OfficialManifestUrl,
+                AssetBaseUrl = OfficialAssetBase,
+                Kind = RouteKind.Both,
+                IsOfficialSource = true
+            });
+            AddMirror("mirror-ghfast", "https://ghfast.top/");
+            AddMirror("mirror-ghproxy", "https://gh-proxy.com/");
+            AddMirror("mirror-llkk", "https://gh.llkk.cc/");
+            AddMirror("mirror-ghproxy-net", "https://ghproxy.net/");
+            // raw 清单保留为兜底（仓库受信源；签名同样必须通过）
             _routes.Add(new RouteEndpoint
             {
                 Name = "github-raw",
-                ManifestUrl = "https://raw.githubusercontent.com/CZM1998/KeyInsight/master/update/manifest.json",
-                AssetBaseUrl = "https://github.com/CZM1998/KeyInsight/releases/download/",
+                ManifestUrl = "https://raw.githubusercontent.com/" + RepoOwner + "/" + RepoName +
+                              "/master/update/manifest.json",
+                AssetBaseUrl = OfficialAssetBase,
                 Kind = RouteKind.Both,
                 IsOfficialSource = true
+            });
+        }
+
+        private void AddMirror(string name, string prefix)
+        {
+            _routes.Add(new RouteEndpoint
+            {
+                Name = name,
+                ManifestUrl = prefix + OfficialManifestUrl,
+                AssetBaseUrl = prefix + OfficialAssetBase,
+                UrlPrefix = prefix,
+                Kind = RouteKind.Both
             });
         }
 

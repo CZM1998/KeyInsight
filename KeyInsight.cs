@@ -225,6 +225,8 @@ namespace KeyInsight
         private readonly SynchronizationContext _sync;
         private DashboardForm _form;
         private UpdateInfo _pendingUpdate;
+        private bool _pendingUpdateAvailable;   // 检查发现新版本（托盘气泡点击 → 下载安装）
+        private string _pendingUpdateVersion;
         private bool _updateBusy;
         private string _lastUpdateCheckResult;
 
@@ -329,7 +331,7 @@ namespace KeyInsight
             _icon.Text = "KeyInsight";
             _icon.Visible = true;
             _icon.DoubleClick += delegate { ShowDashboard(); };
-            _icon.BalloonTipClicked += delegate { if (_pendingUpdate != null) InstallUpdate(); };
+            _icon.BalloonTipClicked += delegate { if (_pendingUpdateAvailable) InstallUpdate(); };
 
             _timer = new System.Windows.Forms.Timer();
             _timer.Interval = 2000;
@@ -443,39 +445,92 @@ namespace KeyInsight
             {
                 try
                 {
-                    UpdateInfo info = UpdateService.Check();
-                    _cfg.LastUpdateCheckTicks = DateTime.UtcNow.Ticks;
-                    _cfg.Save();
-
-                    if (info == null)
+                    if (_updater != null)
                     {
-                        _lastUpdateCheckResult = "检查失败：GitHub 返回异常";
-                        if (manual)
+                        // 复审方案 PR-3/PR-4：固定名 Release 清单（官方 + 公共代理）hedged 获取，
+                        // 验签成功才可信；不再依赖 api.github.com。
+                        // §2.2：只有验签+解析成功才写 LastUpdateCheckTicks，失败不清空 24h 自动重试窗口。
+                        KeyInsight.Update.Orchestration.UpdateOrchestrator.CheckResult r =
+                            _updater.CheckOnly(new Version(AppInfo.Version), "stable", _cfg.UpdateCohort);
+                        _updater.SaveRouteHealth();
+                        if (!r.Ok)
                         {
-                            PostBalloon("检查更新失败", "无法解析发布信息（GitHub 返回异常）", ToolTipIcon.Error);
+                            _lastUpdateCheckResult = "检查失败：" +
+                                (string.IsNullOrEmpty(r.ErrorCategory) ? r.Error
+                                    : r.ErrorCategory + " · " + r.Error);
+                            if (manual)
+                            {
+                                PostBalloon("检查更新失败", r.Error, ToolTipIcon.Error);
+                            }
+                            return;
                         }
-                    }
-                    else if (info.UpToDate)
-                    {
-                        _lastUpdateCheckResult = "已是最新（最新发布 " + info.Tag + "）";
-                        if (manual)
+                        _cfg.LastUpdateCheckTicks = DateTime.UtcNow.Ticks;
+                        _cfg.Save();
+
+                        string via = string.IsNullOrEmpty(r.RouteName) ? "官方源" : r.RouteName;
+                        if (r.UpdateAvailable)
                         {
-                            PostBalloon("已是最新版本",
-                                "当前 v" + UpdateService.CurrentVersion + "（最新发布 " + info.Tag + "）",
+                            _pendingUpdateAvailable = true;
+                            _pendingUpdateVersion = r.VersionText;
+                            _lastUpdateCheckResult = "发现新版本 " + r.VersionText + "（经由 " + via + "）";
+                            PostBalloon("发现新版本 " + r.VersionText,
+                                manual ? "点击这里下载并安装" : "点击托盘气泡或右键检查更新",
                                 ToolTipIcon.Info);
+                            if (manual && _sync != null)
+                            {
+                                _sync.Post(delegate { InstallUpdate(); }, null);
+                            }
+                        }
+                        else
+                        {
+                            _pendingUpdateAvailable = false;
+                            _lastUpdateCheckResult = "已是最新（最新发布 " + r.VersionText + " · 经由 " + via + "）";
+                            if (manual)
+                            {
+                                PostBalloon("已是最新版本",
+                                    "当前 v" + UpdateService.CurrentVersion + "（最新发布 " + r.VersionText + "）",
+                                    ToolTipIcon.Info);
+                            }
+                        }
+                        return;
+                    }
+
+                    // 兜底：编排器不可用时走旧通道（保留以隔离回归）
+                    UpdateInfo info = UpdateService.Check();
+                    if (info != null)
+                    {
+                        _cfg.LastUpdateCheckTicks = DateTime.UtcNow.Ticks;
+                        _cfg.Save();
+                        if (info.UpToDate)
+                        {
+                            _lastUpdateCheckResult = "已是最新（最新发布 " + info.Tag + "）";
+                            if (manual)
+                            {
+                                PostBalloon("已是最新版本",
+                                    "当前 v" + UpdateService.CurrentVersion + "（最新发布 " + info.Tag + "）",
+                                    ToolTipIcon.Info);
+                            }
+                        }
+                        else
+                        {
+                            _pendingUpdate = info;
+                            _pendingUpdateAvailable = true;
+                            _lastUpdateCheckResult = "发现新版本 v" + info.Version;
+                            PostBalloon("发现新版本 v" + info.Version,
+                                manual ? "点击这里下载并安装" : "点击托盘气泡或右键检查更新",
+                                ToolTipIcon.Info);
+                            if (manual && _sync != null)
+                            {
+                                _sync.Post(delegate { InstallUpdate(); }, null);
+                            }
                         }
                     }
                     else
                     {
-                        _lastUpdateCheckResult = "发现新版本 v" + info.Version;
-                        _pendingUpdate = info;
-                        PostBalloon("发现新版本 v" + info.Version,
-                            manual ? "点击这里下载并安装" : "点击托盘气泡或右键检查更新",
-                            ToolTipIcon.Info);
-
-                        if (manual && _sync != null)
+                        _lastUpdateCheckResult = "检查失败：发布信息不可用";
+                        if (manual)
                         {
-                            _sync.Post(delegate { InstallUpdate(); }, null);
+                            PostBalloon("检查更新失败", "无法解析发布信息", ToolTipIcon.Error);
                         }
                     }
                 }
@@ -494,8 +549,57 @@ namespace KeyInsight
 
         private void InstallUpdate()
         {
+            if (_updateBusy) return;
+
+            // 编排链路（复审方案 PR-4/PR-5）：多线路下载 + Range 续传 + 整文件 SHA-256，
+            // portable 安装形态下载 portable zip 原样升级，安装失败由 Updater 回滚。
+            if (_updater != null)
+            {
+                _updateBusy = true;
+                PostBalloon("正在下载更新", "自动选择最快线路下载", ToolTipIcon.Info);
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        bool setupInstall = File.Exists(
+                            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
+                        string assetId = setupInstall ? "windows-x64-setup" : "windows-x64-portable";
+                        bool ready = _updater.CheckAndDownload(
+                            new Version(AppInfo.Version), "stable", _cfg.UpdateCohort, assetId);
+                        _updater.SaveRouteHealth();
+                        if (!ready)
+                        {
+                            if (_updater.State != KeyInsight.Update.Orchestration.UpdateState.UpToDate)
+                            {
+                                PostBalloon("更新下载失败",
+                                    _updater.LastError ?? _updater.LastErrorCategory ?? "未知错误",
+                                    ToolTipIcon.Error);
+                                _lastUpdateCheckResult = "更新下载失败：" +
+                                    (_updater.LastErrorCategory ?? "未知");
+                            }
+                            return;
+                        }
+                        string path = _updater.ReadyInstallerPath;
+                        if (_sync != null)
+                        {
+                            _sync.Post(delegate { PromptInstall(path, null); }, null);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        PostBalloon("更新下载失败", ex.Message, ToolTipIcon.Error);
+                    }
+                    finally
+                    {
+                        _updateBusy = false;
+                    }
+                });
+                return;
+            }
+
+            // 兜底：旧下载通道
             UpdateInfo info = _pendingUpdate;
-            if (info == null || _updateBusy) return;
+            if (info == null) return;
             _updateBusy = true;
             PostBalloon("正在下载更新", "v" + info.Version, ToolTipIcon.Info);
 
@@ -519,19 +623,47 @@ namespace KeyInsight
 
         private void PromptInstall(string path, UpdateInfo info)
         {
+            string verText = info != null ? ("新版本 v" + info.Version + " 已下载。")
+                : "新版本安装包已下载并通过整文件 SHA-256 校验。";
             bool go = Dialogs.Confirm(null, "KeyInsight 更新",
-                "新版本 v" + info.Version + " 已下载。\n\n是否立即安装？安装程序会关闭 KeyInsight，安装完成后自动重新启动。");
+                verText + "\n\n是否立即安装？安装前会自动备份当前版本，完成后重新启动；安装失败自动回滚。");
             if (!go) return;
 
             try
             {
-                UpdateService.RunInstaller(path);
+                if (info != null) UpdateService.RunInstaller(path);
+                else LaunchUpdaterHelper(path);
                 ExitApp();
             }
             catch (Exception ex)
             {
                 Dialogs.Error(null, "启动安装程序失败", ex.Message);
             }
+        }
+
+        /// <summary>经由独立 KeyInsight.Updater.exe 安装（备份 → 应用 → 健康检查 → 失败回滚）。</summary>
+        private void LaunchUpdaterHelper(string installerPath)
+        {
+            string updaterExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "KeyInsight.Updater.exe");
+            if (!File.Exists(updaterExe))
+            {
+                throw new FileNotFoundException("缺少 KeyInsight.Updater.exe，无法安全安装", updaterExe);
+            }
+            bool setupInstall = File.Exists(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
+            string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
+
+            System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
+            psi.FileName = updaterExe;
+            psi.Arguments = "--wait-pid " + System.Diagnostics.Process.GetCurrentProcess().Id +
+                " --installer \"" + installerPath + "\"" +
+                " --package " + (setupInstall ? "setup" : "portable") +
+                " --target \"" + AppDomain.CurrentDomain.BaseDirectory + "\"" +
+                " --health-nonce " + Guid.NewGuid().ToString("N") +
+                " --health-timeout 60";
+            psi.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+            psi.UseShellExecute = true;
+            System.Diagnostics.Process.Start(psi);
         }
 
         private void PostUpdateStateChanged()

@@ -41,6 +41,8 @@ namespace KeyInsight.Update.Orchestration
         public string LastErrorCategory { get; private set; }
         public UpdateManifest CurrentManifest { get; private set; }
         public string ReadyInstallerPath { get; private set; }
+        public string LastRouteName { get; private set; }      // 最近一次成功清单获取的线路
+        public double LastManifestTtfbMs { get; private set; }
 
         public event Action<UpdateState, string> StateChanged;
         public event Action<long, long> DownloadProgress;
@@ -65,6 +67,90 @@ namespace KeyInsight.Update.Orchestration
         }
 
         /// <summary>
+        /// 只检查不下载（复审方案 §3.3/PR-3 验收：API 不可达时仍可经固定名 Release 资产发现版本）。
+        /// hedged 多线路取清单 → 验签 → 解析 → 渠道/版本/撤回/最低升级版本/rollout 判定。
+        /// </summary>
+        public CheckResult CheckOnly(Version currentVersion, string channel, int rolloutCohort)
+        {
+            CheckResult r = new CheckResult();
+            RouteProbe.ManifestFetchResult fetch = RouteProbe.FetchManifestWithHedging(_catalog);
+            if (!fetch.Ok)
+            {
+                r.Error = fetch.Error;
+                r.ErrorCategory = fetch.ErrorCategory;
+                return r;
+            }
+            r.RouteName = fetch.RouteName;
+            r.TtfbMs = fetch.TtfbMs;
+
+            ManifestVerifier.VerifyResult vr = ManifestVerifier.Verify(
+                fetch.ManifestBytes, fetch.Signature, ExtractKeyId(fetch.ManifestBytes));
+            if (!vr.Ok)
+            {
+                r.Error = "manifest signature invalid: " + vr.Error;
+                r.ErrorCategory = "Signature";
+                return r;
+            }
+
+            UpdateManifest manifest;
+            string parseError;
+            if (!UpdateManifest.TryParse(fetch.ManifestBytes, out manifest, out parseError))
+            {
+                r.Error = "manifest parse: " + parseError;
+                r.ErrorCategory = "ManifestInvalid";
+                return r;
+            }
+
+            // 只有验签 + 解析成功的清单才算一次成功检查（调用方据此写 LastUpdateCheckTicks）
+            r.Ok = true;
+            r.Manifest = manifest;
+            r.VersionText = manifest.VersionText;
+            LastRouteName = fetch.RouteName;
+            LastManifestTtfbMs = fetch.TtfbMs;
+            CurrentManifest = manifest;
+
+            if (manifest.Channel != channel)
+            {
+                r.Error = "channel mismatch: " + manifest.Channel;
+                r.ErrorCategory = "ChannelMismatch";
+                return r;
+            }
+            if (manifest.Version <= currentVersion)
+            {
+                r.UpToDate = true;
+                return r;
+            }
+            if (manifest.MinUpgradeFrom != null && currentVersion < manifest.MinUpgradeFrom)
+            {
+                r.Error = "current version below minUpgradeFrom";
+                r.ErrorCategory = "BelowMinimum";
+                return r;
+            }
+            if (manifest.RolloutPercent < 100 && rolloutCohort >= manifest.RolloutPercent)
+            {
+                r.UpToDate = true;
+                r.VersionText += " (rollout " + manifest.RolloutPercent + "%)";
+                return r;
+            }
+            r.UpdateAvailable = true;
+            return r;
+        }
+
+        /// <summary>CheckOnly 结果：Ok=true 表示清单验签并解析成功（与「有更新」区分）。</summary>
+        public sealed class CheckResult
+        {
+            public bool Ok;
+            public bool UpToDate;
+            public bool UpdateAvailable;
+            public string VersionText = "";
+            public string Error = "";
+            public string ErrorCategory = "";
+            public UpdateManifest Manifest;
+            public string RouteName = "";
+            public double TtfbMs = -1;
+        }
+
+        /// <summary>
         /// 执行一次完整检查+下载（阻塞；调用方应放入后台线程）。
         /// currentVersion：本地版本；channel/rolloutCohort：渠道与分批（本地随机 0..99）。
         /// 返回 true 表示 ReadyToInstall（ReadyInstallerPath 有效）。
@@ -84,6 +170,8 @@ namespace KeyInsight.Update.Orchestration
                 SetState(UpdateState.Failed, fetch.ErrorCategory);
                 return false;
             }
+            LastRouteName = fetch.RouteName;
+            LastManifestTtfbMs = fetch.TtfbMs;
 
             // PR-4：验签（内置公钥 + KeyId）
             ManifestVerifier.VerifyResult vr = ManifestVerifier.Verify(

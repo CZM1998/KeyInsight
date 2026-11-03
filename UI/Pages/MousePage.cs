@@ -7,17 +7,41 @@ using KeyInsight.Stats;
 
 namespace KeyInsight.UI.Pages
 {
+    /// <summary>
+    /// 鼠标统计页（复审方案 PR-1/PR-2）：
+    /// - 统计口径：点击（键 1-5）与滚轮刻度（6-9）分开统计；最常用按键不含滚轮。
+    /// - 视觉：分层矢量鼠标插画（阴影/外壳/分件/热区/标注），热区只用单色相蓝色阶，
+    ///   计数走外部引导线标注，不写在鼠标表面。
+    /// - 热区与命中区共用同一套归一化几何（Zones），缩放时统一变换。
+    /// </summary>
     public sealed class MousePage : PageBase
     {
         private readonly IShellActions _shell;
-        private List<RankRow> _rows = new List<RankRow>();
         private List<RankRow> _appRows = new List<RankRow>();
         private long _wheelSum;
         private long _clickSum;
         private long _sideSum;
+        private int _topButton;
+        private int _selectedButton;                 // 0 = 无；点击热区或排行行后保持高亮
+        private int _hoverZone;                      // 鼠标插画热区悬停（0 = 无）
+        private RectangleF _mouseBody;               // 最近一帧鼠标本体矩形（命中反算用）
+        private bool _mouseBodyValid;
+
+        private sealed class RankEntry
+        {
+            public int Button;
+            public string Label;
+            public long Value;
+        }
+        private List<RankEntry> _rankEntries = new List<RankEntry>();
+        private readonly List<Rectangle> _rankRects = new List<Rectangle>();
+        private int _hoverRank = -1;
 
         public override string Title { get { return "鼠标统计"; } }
-        public override string Subtitle { get { return "鼠标点击、侧键与滚轮使用情况；微动异常仅检测不拦截"; } }
+        public override string Subtitle { get { return "点击与滚轮分开统计 · 微动异常仅检测不拦截"; } }
+
+        // 鼠标主体 + 两侧标注需要约 300px 卡内高；底部两卡再需 ~230px
+        protected override int MinContentHeight { get { return 800; } }
 
         public MousePage(IShellActions shell)
         {
@@ -28,14 +52,32 @@ namespace KeyInsight.UI.Pages
         public override void SetSnapshot(StatsSnapshot s)
         {
             base.SetSnapshot(s);
-            // PR-2：排行/汇总在快照阶段计算，Draw 不再排序
-            _rows = MouseRows(s.Range.Mouse);
             _appRows = AppRows(s.Range.Apps);
             _wheelSum = WheelSum(s.Range.Mouse);
             long clicks = 0;
             for (int b = 1; b <= 5; b++) clicks += Count(s.Range.Mouse, b);
             _clickSum = clicks;
             _sideSum = Count(s.Range.Mouse, MouseIds.Back) + Count(s.Range.Mouse, MouseIds.Forward);
+            _topButton = TopButton(s.Range.Mouse);
+
+            // 排行：五个物理键 + 四向滚轮；行可点击并联动热区高亮
+            List<RankEntry> entries = new List<RankEntry>();
+            for (int b = 1; b <= 9; b++)
+            {
+                long v = Count(s.Range.Mouse, b);
+                if (v <= 0) continue;
+                RankEntry e = new RankEntry();
+                e.Button = b;
+                e.Label = MouseNames.Full(b);
+                e.Value = v;
+                entries.Add(e);
+            }
+            entries.Sort(delegate(RankEntry a, RankEntry b)
+            {
+                if (a.Value != b.Value) return b.Value.CompareTo(a.Value);
+                return a.Button.CompareTo(b.Button);
+            });
+            _rankEntries = entries;
         }
 
         protected override void Draw(Graphics g)
@@ -44,46 +86,33 @@ namespace KeyInsight.UI.Pages
             DrawHeader(g);
             DrawRangeChips(g, 0, 58);
 
-            long today = Sum(Snap.Today.Mouse);
-            long range = Sum(Snap.Range.Mouse);
-            int topButton = TopButton(Snap.Range.Mouse);
-            long wheel = WheelSum(Snap.Range.Mouse);
-
             int y = 100;
             int gap = 14;
             int cardW = (ContentW - gap * 3) / 4;
             int cardH = 100;
 
-            Charts.StatCard(g, new Rectangle(0, y, cardW, cardH), p, "今日点击", Charts.Number(today),
-                "左/右/中/侧键 + 滚轮", p.Accent1);
-            Charts.StatCard(g, new Rectangle(cardW + gap, y, cardW, cardH), p, "范围点击", Charts.Number(range),
-                "范围：" + RangeText(), p.Accent2);
+            Charts.StatCard(g, new Rectangle(0, y, cardW, cardH), p, "点击次数", Charts.Number(_clickSum),
+                "左/右/中/侧键（不含滚轮）", p.Accent1);
+            Charts.StatCard(g, new Rectangle(cardW + gap, y, cardW, cardH), p, "滚轮刻度", Charts.Number(_wheelSum),
+                "上下左右累计 · 高分辨率按 120 归格", p.Info);
             Charts.StatCard(g, new Rectangle((cardW + gap) * 2, y, cardW, cardH), p, "最常用按键",
-                topButton > 0 ? MouseNames.Short(topButton) : "-",
-                topButton > 0 ? Charts.Number(Count(Snap.Range.Mouse, topButton)) + " 次" : "暂无数据", p.Accent3);
-            Charts.StatCard(g, new Rectangle((cardW + gap) * 3, y, cardW, cardH), p, "滚轮格数",
-                Charts.Number(wheel), "上下左右滚动", p.Info);
+                _topButton > 0 ? MouseNames.Short(_topButton) : "-",
+                _topButton > 0 ? Charts.Number(Count(Snap.Range.Mouse, _topButton)) + " 次" : "暂无数据", p.Accent3);
+            Charts.StatCard(g, new Rectangle((cardW + gap) * 3, y, cardW, cardH), p, "侧键 4/5",
+                Charts.Number(_sideSum), "网页前进 / 后退", p.Accent2);
 
             int contentY = y + cardH + gap;
             int leftW = (int)(ContentW * 0.46);
             int rightW = ContentW - leftW - gap;
-            int midH = 276;
+            int midH = 340;
 
-            SectionCard(g, new Rectangle(0, contentY, leftW, midH), "鼠标按键", "按使用频率着色");
-            DrawMouse(g, new Rectangle(18, contentY + 56, leftW - 36, midH - 70), Snap.Range.Mouse, p);
+            SectionCard(g, new Rectangle(0, contentY, leftW, midH), "鼠标结构", "蓝色热度 = 相对使用频率");
+            DrawMouse(g, new Rectangle(12, contentY + 50, leftW - 24, midH - 64), Snap.Range.Mouse, p);
 
-            SectionCard(g, new Rectangle(leftW + gap, contentY, rightW, midH), "按键排行", "点击与滚轮次数");
-            List<RankRow> rows = _rows;
-            if (rows.Count == 0)
-            {
-                Ui.TextCenter(g, "这个范围内还没有鼠标数据", Ui.BodySmall, p.Dim,
-                    new Rectangle(leftW + gap + 18, contentY + 90, rightW - 36, 40));
-            }
-            else
-            {
-                Charts.DrawRankList(g, new Rectangle(leftW + gap + 18, contentY + 58, rightW - 36, midH - 70),
-                    rows, p, Ui.BodySmall);
-            }
+            SectionCard(g, new Rectangle(leftW + gap, contentY, rightW, midH), "按键排行",
+                _selectedButton > 0 ? "点击行可在左侧高亮热区（已选 " + MouseNames.Short(ZoneButton(_selectedButton)) + "）"
+                                    : "点击行可在左侧高亮热区");
+            DrawButtonRank(g, new Rectangle(leftW + gap + 18, contentY + 54, rightW - 36, midH - 68), p);
 
             int bottomY = contentY + midH + gap;
             int bottomH = ContentH - bottomY;
@@ -107,12 +136,436 @@ namespace KeyInsight.UI.Pages
                 Ui.Label, p.Dim, new Rectangle(18, bottomY + bottomH - 24, appsW - 36, 18));
             Ui.TextLeftEllipsis(g,
                 "V2 观察：原始滚轮 delta " + Charts.Number(_shell.MouseRawWheelDelta) +
-                " · 微动候选 " + Charts.Number(_shell.MouseCycleCandidates) + " 次（仅检测不拦截）",
+                " · 微动候选 " + Charts.Number(_shell.MouseCycleCandidates) +
+                " 次（被动统计仅是候选，主动测试后才能下结论）",
                 Ui.Label, p.Dim, new Rectangle(18, bottomY + bottomH - 42, appsW - 36, 16));
 
-            SectionCard(g, new Rectangle(appsW + gap, bottomY, funW, bottomH), "趣味换算", "按 1 格滚轮 ≈ 3 cm 估算");
+            SectionCard(g, new Rectangle(appsW + gap, bottomY, funW, bottomH), "趣味换算（估算）",
+                "滚轮刻度按 1 格 ≈ 3 cm 估算，非真实滚动距离");
             DrawFun(g, new Rectangle(appsW + gap + 18, bottomY + 56, funW - 36, bottomH - 70), p);
         }
+
+        // ---------------------------------------------------------------- 排行（可点击联动热区）
+
+        private void DrawButtonRank(Graphics g, Rectangle r, Palette p)
+        {
+            _rankRects.Clear();
+            _hoverRank = -1;
+            List<RankEntry> rows = _rankEntries;
+            if (rows.Count == 0)
+            {
+                Ui.TextCenter(g, "这个范围内还没有鼠标数据", Ui.BodySmall, p.Dim,
+                    new Rectangle(r.X, r.Y + 60, r.Width, 40));
+                return;
+            }
+
+            long max = 1;
+            for (int i = 0; i < rows.Count; i++) if (rows[i].Value > max) max = rows[i].Value;
+            int rowH = Math.Min(30, Math.Max(24, r.Height / rows.Count));
+            Point cur = CursorToContent();
+            int count = Math.Min(rows.Count, r.Height / rowH);
+
+            for (int i = 0; i < count; i++)
+            {
+                RankEntry row = rows[i];
+                Rectangle rect = new Rectangle(r.X, r.Y + i * rowH, r.Width, rowH - 4);
+                _rankRects.Add(rect);
+
+                bool selected = row.Button != 0 && _selectedButton != 0 &&
+                    ZoneButton(_selectedButton) == ZoneButton(row.Button);
+                bool hover = rect.Contains(cur);
+                if (selected) Ui.FillRound(g, rect, 7, p.Selected);
+                else if (hover) Ui.FillRound(g, rect, 7, p.Hover);
+
+                Ui.TextLeft(g, (i + 1).ToString(), Ui.Mono, p.Dim, new Rectangle(rect.X + 2, rect.Y, 22, rowH));
+                Ui.TextLeft(g, row.Label, Ui.BodySmall, p.Text,
+                    new Rectangle(rect.X + 26, rect.Y, rect.Width - 120, rowH));
+                Ui.TextRight(g, Charts.Number(row.Value) + " 次", Ui.Label, p.Muted,
+                    new Rectangle(rect.Right - 88, rect.Y, 86, rowH));
+
+                RectangleF barBg = new RectangleF(rect.X + 26, rect.Bottom - 5, r.Width - 30, 3f);
+                Ui.FillRound(g, barBg, 1.5f, p.CardAlt);
+                float w = (r.Width - 30) * (row.Value / (float)max);
+                if (w < 2 && row.Value > 0) w = 2;
+                if (w > 0)
+                {
+                    Ui.GradientRound(g, new RectangleF(barBg.X, barBg.Y, w, 3f), 1.5f,
+                        p.Accent2, p.Accent1, 0f);
+                }
+            }
+        }
+
+        /// <summary>排行行的按钮 → 热区（四向滚轮都落在中键/滚轮槽热区）。</summary>
+        private static int ZoneButton(int button)
+        {
+            return button >= MouseIds.WheelUp ? MouseIds.Middle : button;
+        }
+
+        // ---------------------------------------------------------------- 鼠标插画（分层矢量）
+
+        private sealed class ZoneGeom
+        {
+            public int Button;              // MouseIds.*
+            public GraphicsPath Path;       // 归一化 0..100 × 0..160；显示与命中共用
+            public PointF Anchor;           // 引导线锚点（归一化）
+            public string Label;
+            public bool AnchorLeft;         // 标注框放左侧
+            public int SlotY;               // 同侧标注槽位（0 上 … 2 下）
+        }
+
+        private static readonly ZoneGeom[] Zones = BuildZones();
+
+        private static ZoneGeom[] BuildZones()
+        {
+            List<ZoneGeom> list = new List<ZoneGeom>();
+
+            // 左键（与外壳同源的贝塞尔，沿用现版造型）
+            GraphicsPath left = new GraphicsPath();
+            left.AddBezier(P(50, 2), P(35, 2), P(25, 8), P(21, 22));
+            left.AddBezier(P(21, 22), P(17, 38), P(14, 56), P(14, 76));
+            left.AddBezier(P(14, 76), P(22, 82), P(34, 84), P(48, 84));
+            left.AddLine(P(48, 84), P(49, 2));
+            left.CloseFigure();
+
+            // 右键（镜像）
+            GraphicsPath right = new GraphicsPath();
+            right.AddBezier(P(50, 2), P(65, 2), P(75, 8), P(79, 22));
+            right.AddBezier(P(79, 22), P(83, 38), P(86, 56), P(86, 76));
+            right.AddBezier(P(86, 76), P(78, 82), P(66, 84), P(52, 84));
+            right.AddLine(P(52, 84), P(51, 2));
+            right.CloseFigure();
+
+            // 滚轮槽 / 中键热区（中央凹槽）
+            GraphicsPath wheel = RoundPath(42.5f, 13, 57.5f, 64, 7);
+
+            // 侧键实体（与左侧壳体连成一体的凸起结构）
+            GraphicsPath back = RoundPath(4, 72, 19, 94, 6);
+            GraphicsPath fwd = RoundPath(4, 102, 19, 124, 6);
+
+            list.Add(new ZoneGeom { Button = MouseIds.Left, Path = left, Anchor = P(30, 34), Label = "左键", AnchorLeft = true, SlotY = 0 });
+            list.Add(new ZoneGeom { Button = MouseIds.Right, Path = right, Anchor = P(70, 34), Label = "右键", AnchorLeft = false, SlotY = 0 });
+            list.Add(new ZoneGeom { Button = MouseIds.Middle, Path = wheel, Anchor = P(50, 46), Label = "中键", AnchorLeft = false, SlotY = 1 });
+            list.Add(new ZoneGeom { Button = MouseIds.Back, Path = back, Anchor = P(11, 82), Label = "侧键 4", AnchorLeft = true, SlotY = 1 });
+            list.Add(new ZoneGeom { Button = MouseIds.Forward, Path = fwd, Anchor = P(11, 113), Label = "侧键 5", AnchorLeft = false, SlotY = 2 });
+            return list.ToArray();
+        }
+
+        private static PointF P(float x, float y)
+        {
+            return new PointF(x, y);
+        }
+
+        private static GraphicsPath RoundPath(float x1, float y1, float x2, float y2, float radius)
+        {
+            RectangleF r = new RectangleF(Math.Min(x1, x2), Math.Min(y1, y2),
+                Math.Abs(x2 - x1), Math.Abs(y2 - y1));
+            return Ui.RoundRect(r, radius);
+        }
+
+        /// <summary>单色相蓝色阶（复审方案 §4.3）：低 #245AA0 → 中 #347FE0 → 高 #58A9FF → 极高 #72D4E5。</summary>
+        private static Color HeatRamp(double t)
+        {
+            t = Math.Max(0, Math.Min(1, t));
+            Color c0 = Hex(0x245AA0);
+            Color c1 = Hex(0x347FE0);
+            Color c2 = Hex(0x58A9FF);
+            Color c3 = Hex(0x72D4E5);
+            if (t < 1.0 / 3.0) return Ui.Blend(c0, c1, (float)(t * 3.0));
+            if (t < 2.0 / 3.0) return Ui.Blend(c1, c2, (float)((t - 1.0 / 3.0) * 3.0));
+            return Ui.Blend(c2, c3, (float)((t - 2.0 / 3.0) * 3.0));
+        }
+
+        private static Color Hex(int v)
+        {
+            return Color.FromArgb((v >> 16) & 255, (v >> 8) & 255, v & 255);
+        }
+
+        private static Color NeutralZone(Palette p)
+        {
+            return p.Dark ? Hex(0x26384F) : Hex(0x334B66);
+        }
+
+        private void DrawMouse(Graphics g, Rectangle r, Dictionary<int, long> mouse, Palette p)
+        {
+            long max = 1;
+            for (int b = 1; b <= 5; b++)
+            {
+                long v = Count(mouse, b);
+                if (v > max) max = v;
+            }
+            long wheelMax = Math.Max(1, WheelSum(mouse));
+
+            // 主体自适应：高度优先，宽度受两侧标注约束（复审方案：主体约 180×250 起步）
+            int bodyH = Math.Min(r.Height - 4, 300);
+            int bodyW = (int)Math.Min(bodyH * 0.66, Math.Max(96, r.Width * 0.46));
+            if (bodyH < 120) bodyH = Math.Min(160, Math.Max(120, r.Height - 4));
+            bodyW = Math.Max(70, (int)(bodyH * 0.66));
+            if (bodyW > r.Width - 60) bodyW = Math.Max(64, r.Width - 60);
+
+            RectangleF body = new RectangleF(
+                r.X + (r.Width - bodyW) / 2f,
+                r.Y + (r.Height - bodyH) / 2f,
+                bodyW, bodyH);
+            _mouseBody = body;
+            _mouseBodyValid = true;
+
+            Func<float, float, PointF> at = delegate(float x, float y)
+            {
+                return new PointF(body.X + x * body.Width / 100f,
+                                  body.Y + y * body.Height / 160f);
+            };
+
+            // L0 接触阴影：柔和椭圆，避免悬浮感
+            using (SolidBrush sh = new SolidBrush(Color.FromArgb(p.Dark ? 90 : 46, 8, 16, 30)))
+            {
+                RectangleF shadow = new RectangleF(body.X + 6, body.Bottom - 12, body.Width * 0.9f, 16);
+                g.FillEllipse(sh, shadow);
+            }
+
+            // L1 外壳：石墨蓝分层渐变 + 顶部高光
+            Color shellTop = p.Dark ? Hex(0x33465F) : Color.White;
+            Color shellBottom = p.Dark ? Hex(0x1B2A3F) : Color.FromArgb(228, 235, 244);
+            using (GraphicsPath bp = BodyPathOf(at))
+            {
+                using (LinearGradientBrush bg = new LinearGradientBrush(
+                    new RectangleF(body.X, body.Y, body.Width, body.Height), shellTop, shellBottom, 90f))
+                {
+                    g.FillPath(bg, bp);
+                }
+                using (Pen border = new Pen(p.Dark ? Hex(0x4A6180) : Hex(0x8FA6C4), 1.4f))
+                {
+                    g.DrawPath(border, bp);
+                }
+            }
+            using (Pen hl = new Pen(Color.FromArgb(p.Dark ? 40 : 170, 255, 255, 255), 2f))
+            {
+                g.DrawBezier(hl, at(50, 4), at(33, 4), at(23, 11), at(20, 26));
+            }
+
+            // 左手拇指托（结构与分件，不属于热区）
+            using (GraphicsPath thumb = new GraphicsPath())
+            {
+                thumb.AddBezier(at(12, 76), at(20, 88), at(21, 118), at(16, 150));
+                thumb.AddLine(at(16, 150), at(28, 150));
+                thumb.AddBezier(at(28, 150), at(35, 118), at(35, 88), at(27, 76));
+                thumb.CloseFigure();
+                using (SolidBrush tb = new SolidBrush(Ui.WithAlpha(
+                    p.Dark ? Color.Black : Color.White, p.Dark ? 42 : 90)))
+                {
+                    g.FillPath(tb, thumb);
+                }
+            }
+
+            // L3 动态热区（先收集命中结果，再统一绘制，保证热区=命中区）
+            _hoverZone = -1;
+            int hovered = -1;
+            Point cur = CursorToContent();
+            for (int i = 0; i < Zones.Length; i++)
+            {
+                if (Zones[i].Path.IsVisible(NormPoint(cur, body))) hovered = Zones[i].Button;
+            }
+
+            for (int i = 0; i < Zones.Length; i++)
+            {
+                ZoneGeom z = Zones[i];
+                long n = Count(mouse, z.Button);
+                double t = n <= 0 ? 0 : Math.Log(1 + n) / Math.Log(1 + max);
+                Color heat = n <= 0 ? NeutralZone(p) : HeatRamp(t);
+
+                bool isHover = _hoverZonePending == z.Button || hovered == z.Button;
+                bool selected = _selectedButton != 0 && ZoneButton(_selectedButton) == z.Button;
+
+                using (GraphicsPath zp = Transformed(z.Path, at))
+                {
+                    int alpha = p.Dark ? (n > 0 ? 175 : 120) : (n > 0 ? 150 : 92);
+                    Color fill = Color.FromArgb(alpha, heat);
+                    if (isHover) fill = Ui.Blend(fill, Hex(0xA6D8FF), 0.45f);
+                    using (SolidBrush sb = new SolidBrush(fill))
+                    {
+                        g.FillPath(sb, zp);
+                    }
+                    Color stroke = isHover || selected ? Hex(0xA6D8FF) : Ui.Blend(heat, Color.White, 0.22f);
+                    using (Pen pen = new Pen(stroke, selected ? 2f : 1.1f))
+                    {
+                        g.DrawPath(pen, zp);
+                    }
+                    // 键面高光：体积感
+                    if (z.Button == MouseIds.Left || z.Button == MouseIds.Right)
+                    {
+                        using (Pen sheen = new Pen(Color.FromArgb(60, 255, 255, 255), 1.2f))
+                        {
+                            if (z.Button == MouseIds.Left)
+                                g.DrawBezier(sheen, at(24, 8), at(20, 30), at(18, 52), at(19, 72));
+                            else
+                                g.DrawBezier(sheen, at(76, 8), at(80, 30), at(82, 52), at(81, 72));
+                        }
+                    }
+                }
+            }
+            _hoverZone = hovered;
+
+            // L2 分件细节：中缝、键缝、滚轮槽、DPI 键（外观结构，不计入热区）
+            using (Pen split = new Pen(Ui.WithAlpha(p.Dark ? Color.Black : Color.White, 80), 1.2f))
+            {
+                g.DrawLine(split, at(50, 3), at(50, 16));
+                g.DrawLine(split, at(50, 60), at(50, 83));
+            }
+            using (Pen seam = new Pen(Ui.WithAlpha(p.Dark ? Hex(0x0E1826) : Hex(0xC7D2E2), 190), 1.2f))
+            {
+                g.DrawBezier(seam, at(14, 78), at(30, 85), at(70, 85), at(86, 78));
+            }
+
+            // 滚轮橡胶体（在槽内，带纹理；中键点击区独立于滚动）
+            RectangleF recess = RectBetween(at(42.5f, 13), at(57.5f, 64));
+            Ui.FillRound(g, recess, 7, p.Dark ? Hex(0x141F30) : Hex(0xB9C4D6));
+            long midCount = Count(mouse, MouseIds.Middle);
+            RectangleF wheel = RectBetween(at(45.5f, 18), at(54.5f, 60));
+            Color wheelBase = p.Dark ? Hex(0x3A4459) : Hex(0xD7DEE9);
+            if (midCount > 0)
+            {
+                double wt = Math.Log(1 + midCount) / Math.Log(1 + max);
+                wheelBase = Ui.Blend(wheelBase, HeatRamp(wt), 0.55f);
+            }
+            using (GraphicsPath wp = Ui.RoundRect(wheel, 5))
+            using (LinearGradientBrush wb = new LinearGradientBrush(wheel,
+                Ui.Blend(wheelBase, Color.White, 0.16f),
+                Ui.Blend(wheelBase, Color.Black, 0.18f), 90f))
+            {
+                g.FillPath(wb, wp);
+            }
+            using (Pen ridge = new Pen(Ui.WithAlpha(p.TextOn(wheelBase), 110), 1f))
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    float yy = wheel.Y + wheel.Height * (0.2f + i * 0.18f);
+                    g.DrawLine(ridge, wheel.X + 2.5f, yy, wheel.Right - 2.5f, yy);
+                }
+            }
+
+            // DPI 键（外观结构）
+            RectangleF dpi = RectBetween(at(46.5f, 68), at(53.5f, 74));
+            Ui.FillRound(g, dpi, 2, Ui.Blend(shellTop, shellBottom, 0.5f));
+            Ui.StrokeRound(g, dpi, 2, p.Border);
+
+            // L4 外部引导线标注（计数不写在鼠标表面）
+            DrawCallouts(g, body, r, mouse, max, wheelMax, p);
+        }
+
+        /// <summary>归一化坐标 → 画布坐标后的外壳路径。</summary>
+        private static GraphicsPath BodyPathOf(Func<float, float, PointF> at)
+        {
+            GraphicsPath body = new GraphicsPath();
+            body.AddBezier(at(50, 1), at(34, 1), at(24, 8), at(20, 22));
+            body.AddBezier(at(20, 22), at(15, 40), at(11, 62), at(11, 86));
+            body.AddBezier(at(11, 86), at(11, 112), at(15, 136), at(27, 150));
+            body.AddBezier(at(27, 150), at(34, 157), at(42, 160), at(50, 160));
+            body.AddBezier(at(50, 160), at(58, 157), at(66, 157), at(73, 150));
+            body.AddBezier(at(73, 150), at(85, 136), at(89, 112), at(89, 86));
+            body.AddBezier(at(89, 86), at(89, 62), at(85, 40), at(80, 22));
+            body.AddBezier(at(80, 22), at(76, 8), at(66, 1), at(50, 1));
+            body.CloseFigure();
+            return body;
+        }
+
+        private static GraphicsPath Transformed(GraphicsPath source, Func<float, float, PointF> at)
+        {
+            GraphicsPath clone = (GraphicsPath)source.Clone();
+            Matrix m = new Matrix();
+            PointF p0 = at(0, 0);
+            PointF p100 = at(100, 160);
+            m.Translate(p0.X, p0.Y);
+            m.Scale((p100.X - p0.X) / 100f, (p100.Y - p0.Y) / 160f);
+            clone.Transform(m);
+            m.Dispose();
+            return clone;
+        }
+
+        private static PointF NormPoint(Point pt, RectangleF body)
+        {
+            if (body.Width <= 0 || body.Height <= 0) return new PointF(-1, -1);
+            return new PointF((pt.X - body.X) * 100f / body.Width,
+                              (pt.Y - body.Y) * 160f / body.Height);
+        }
+
+        // 引导线标注：左侧 左键/侧键4，右侧 右键/中键/侧键5（槽位防重叠）
+        private void DrawCallouts(Graphics g, RectangleF body, Rectangle r,
+            Dictionary<int, long> mouse, long max, long wheelMax, Palette p)
+        {
+            int boxW = Math.Min(96, (int)((r.Width - body.Width) / 2f) - 8);
+            if (boxW < 56) return;   // 窄卡：只保留热区，不画标注框
+
+            int boxH = 38;
+            for (int side = 0; side < 2; side++)
+            {
+                bool isLeft = side == 0;
+                List<ZoneGeom> zs = new List<ZoneGeom>();
+                foreach (ZoneGeom z in Zones)
+                {
+                    if (z.AnchorLeft == isLeft) zs.Add(z);
+                }
+                zs.Sort(delegate(ZoneGeom a, ZoneGeom b) { return a.SlotY.CompareTo(b.SlotY); });
+
+                for (int i = 0; i < zs.Count; i++)
+                {
+                    ZoneGeom z = zs[i];
+                    long n = Count(mouse, z.Button);
+                    bool selected = _selectedButton != 0 && ZoneButton(_selectedButton) == z.Button;
+                    bool hover = _hoverZone == z.Button;
+
+                    // 槽位均匀分布在本侧高度上
+                    float fy = (i + 0.5f) / zs.Count;
+                    int by = (int)(body.Y + body.Height * fy - boxH / 2f);
+                    if (by < r.Y) by = r.Y;
+                    if (by + boxH > r.Bottom) by = (int)(r.Bottom - boxH);
+                    int bx = isLeft ? r.X : (int)(r.Right - boxW);
+
+                    Rectangle box = new Rectangle(bx, by, boxW, boxH);
+                    using (GraphicsPath bp = Ui.RoundRect(new RectangleF(box.X, box.Y, box.Width, box.Height), 8))
+                    {
+                        using (SolidBrush fb = new SolidBrush(Ui.WithAlpha(p.Card, 235)))
+                        {
+                            g.FillPath(fb, bp);
+                        }
+                        Color bc = selected || hover ? p.Accent1 : p.Border;
+                        using (Pen pen = new Pen(bc, selected ? 1.6f : 1f))
+                        {
+                            g.DrawPath(pen, bp);
+                        }
+                    }
+                    Ui.TextCenter(g, z.Label, Ui.Label,
+                        selected ? p.Accent1 : p.Text, new Rectangle(box.X, box.Y + 4, box.Width, 16));
+                    Ui.TextCenter(g, Charts.Number(n), Ui.BodySmall,
+                        n > 0 ? p.Muted : p.Dim, new Rectangle(box.X, box.Y + 20, box.Width, 16));
+
+                    // 引导线：标注框内侧 → 热区锚点，端点小圆点
+                    PointF anchor = AtNorm(body, z.Anchor);
+                    PointF start = new PointF(isLeft ? box.Right : box.X, box.Y + boxH / 2f);
+                    Color lc = selected || hover ? p.Accent1 : Ui.WithAlpha(p.Border, 220);
+                    using (Pen pen = new Pen(lc, 1f))
+                    {
+                        g.DrawLine(pen, start.X, start.Y, anchor.X, anchor.Y);
+                    }
+                    using (SolidBrush dot = new SolidBrush(lc))
+                    {
+                        g.FillEllipse(dot, anchor.X - 2.5f, anchor.Y - 2.5f, 5, 5);
+                    }
+                }
+            }
+        }
+
+        private static PointF AtNorm(RectangleF body, PointF n)
+        {
+            return new PointF(body.X + n.X * body.Width / 100f,
+                              body.Y + n.Y * body.Height / 160f);
+        }
+
+        private static RectangleF RectBetween(PointF a, PointF b)
+        {
+            return new RectangleF(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
+                Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
+        }
+
+        // ---------------------------------------------------------------- 趣味换算
 
         private void DrawFun(Graphics g, Rectangle r, Palette p)
         {
@@ -123,21 +576,20 @@ namespace KeyInsight.UI.Pages
                 : meters.ToString("F1") + " m";
             string scrollSub;
             if (ticks <= 0) scrollSub = "还没有滚轮数据";
-            else if (meters < 100) scrollSub = "≈ 爬 " + Math.Max(1, (int)Math.Round(meters / 3.0)) + " 层楼";
-            else if (meters < 1000) scrollSub = "≈ " + (meters / 400.0).ToString("F2") + " 个 400 米操场";
-            else if (meters < 10000) scrollSub = "≈ " + (meters / 330.0).ToString("F1") + " 个埃菲尔铁塔";
-            else scrollSub = "≈ 珠峰的 " + (meters / 8848.0 * 100).ToString("F1") + "%";
+            else if (meters < 100) scrollSub = "≈ 爬 " + Math.Max(1, (int)Math.Round(meters / 3.0)) + " 层楼（估算）";
+            else if (meters < 1000) scrollSub = "≈ " + (meters / 400.0).ToString("F2") + " 个 400 米操场（估算）";
+            else if (meters < 10000) scrollSub = "≈ " + (meters / 330.0).ToString("F1") + " 个埃菲尔铁塔（估算）";
+            else scrollSub = "≈ 珠峰的 " + (meters / 8848.0 * 100).ToString("F1") + "%（估算）";
 
             long clicks = _clickSum;
             long side = _sideSum;
 
-            // PR-3：小窗口下按可用高度收敛行数，不溢出卡片
             int rowH = 36;
             int maxRows = Math.Max(1, r.Height / rowH);
             if (maxRows >= 1)
             {
                 DrawFunRow(g, new Rectangle(r.X, r.Y, r.Width, rowH), p,
-                    "滚轮距离", distance, scrollSub);
+                    "滚轮距离（估算）", distance, scrollSub);
             }
             if (maxRows >= 2)
             {
@@ -160,249 +612,12 @@ namespace KeyInsight.UI.Pages
             Ui.TextLeftEllipsis(g, sub, Ui.Label, p.Dim, new Rectangle(r.X, r.Y + 18, r.Width, 16));
         }
 
-        private void DrawMouse(Graphics g, Rectangle r, Dictionary<int, long> mouse, Palette p)
-        {
-            long max = 1;
-            for (int b = 1; b <= 5; b++)
-            {
-                long v = Count(mouse, b);
-                if (v > max) max = v;
-            }
-
-            int bodyH = Math.Min(r.Height, 192);
-            int bodyW = Math.Min(r.Width - 70, 128);
-            RectangleF bodyRect = new RectangleF(
-                r.X + (r.Width - bodyW) / 2f,
-                r.Y + (r.Height - bodyH) / 2f,
-                bodyW, bodyH);
-
-            Func<float, float, PointF> at = delegate(float x, float y)
-            {
-                return new PointF(bodyRect.X + x * bodyRect.Width / 100f,
-                                  bodyRect.Y + y * bodyRect.Height / 160f);
-            };
-
-            using (GraphicsPath body = new GraphicsPath())
-            {
-                body.AddBezier(at(50, 1), at(34, 1), at(24, 8), at(20, 22));
-                body.AddBezier(at(20, 22), at(15, 40), at(11, 62), at(11, 86));
-                body.AddBezier(at(11, 86), at(11, 112), at(15, 136), at(27, 150));
-                body.AddBezier(at(27, 150), at(34, 157), at(42, 160), at(50, 160));
-                body.AddBezier(at(50, 160), at(58, 157), at(66, 157), at(73, 150));
-                body.AddBezier(at(73, 150), at(85, 136), at(89, 112), at(89, 86));
-                body.AddBezier(at(89, 86), at(89, 62), at(85, 40), at(80, 22));
-                body.AddBezier(at(80, 22), at(76, 8), at(66, 1), at(50, 1));
-                body.CloseFigure();
-
-                using (GraphicsPath shadow = (GraphicsPath)body.Clone())
-                using (Matrix shift = new Matrix())
-                {
-                    shift.Translate(3f, 4f);
-                    shadow.Transform(shift);
-                    using (SolidBrush sb = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
-                    {
-                        g.FillPath(sb, shadow);
-                    }
-                }
-
-                DrawSideButton(g, at, mouse, MouseIds.Back, max, p, 84f);
-                DrawSideButton(g, at, mouse, MouseIds.Forward, max, p, 116f);
-
-                Color bodyTop = p.Dark ? Ui.Blend(p.Card, Color.White, 0.07f) : Color.White;
-                Color bodyBottom = p.Dark ? Ui.Blend(p.Card, Color.Black, 0.32f) : Color.FromArgb(232, 237, 245);
-                using (LinearGradientBrush bg = new LinearGradientBrush(
-                    new RectangleF(bodyRect.X, bodyRect.Y, bodyRect.Width, bodyRect.Height),
-                    bodyTop, bodyBottom, 90f))
-                {
-                    g.FillPath(bg, body);
-                }
-
-                using (GraphicsPath thumb = new GraphicsPath())
-                {
-                    thumb.AddBezier(at(12, 76), at(20, 88), at(21, 118), at(16, 150));
-                    thumb.AddLine(at(16, 150), at(28, 150));
-                    thumb.AddBezier(at(28, 150), at(35, 118), at(35, 88), at(27, 76));
-                    thumb.CloseFigure();
-                    using (SolidBrush tb = new SolidBrush(Ui.WithAlpha(
-                        p.Dark ? Color.Black : Color.White, p.Dark ? 42 : 85)))
-                    {
-                        g.FillPath(tb, thumb);
-                    }
-                }
-
-                GraphicsState state = g.Save();
-                g.SetClip(body, CombineMode.Intersect);
-                using (GraphicsPath lb = new GraphicsPath())
-                {
-                    lb.AddBezier(at(50, 2), at(35, 2), at(25, 8), at(21, 22));
-                    lb.AddBezier(at(21, 22), at(17, 38), at(14, 56), at(14, 76));
-                    lb.AddBezier(at(14, 76), at(22, 82), at(34, 84), at(48, 84));
-                    lb.AddLine(at(48, 84), at(49, 2));
-                    lb.CloseFigure();
-                    FillKeyArea(g, lb, Count(mouse, MouseIds.Left), max, p);
-                }
-                using (GraphicsPath rb = new GraphicsPath())
-                {
-                    rb.AddBezier(at(50, 2), at(65, 2), at(75, 8), at(79, 22));
-                    rb.AddBezier(at(79, 22), at(83, 38), at(86, 56), at(86, 76));
-                    rb.AddBezier(at(86, 76), at(78, 82), at(66, 84), at(52, 84));
-                    rb.AddLine(at(52, 84), at(51, 2));
-                    rb.CloseFigure();
-                    FillKeyArea(g, rb, Count(mouse, MouseIds.Right), max, p);
-                }
-                g.Restore(state);
-
-                using (Pen split = new Pen(Ui.WithAlpha(p.Dark ? Color.Black : Color.White, 70), 1f))
-                {
-                    g.DrawLine(split, at(50, 3), at(50, 16));
-                    g.DrawLine(split, at(50, 62), at(50, 84));
-                }
-                using (Pen seam = new Pen(Ui.WithAlpha(p.Border, 140), 1f))
-                {
-                    g.DrawBezier(seam, at(14, 78), at(30, 85), at(70, 85), at(86, 78));
-                }
-
-                RectangleF recess = RectBetween(at(42.5f, 13), at(57.5f, 64));
-                Ui.FillRound(g, recess, 7, Ui.WithAlpha(p.Bg, 242));
-                Ui.StrokeRound(g, recess, 7, p.BorderStrong);
-
-                RectangleF wheel = RectBetween(at(45.5f, 18), at(54.5f, 60));
-                long wheelCount = Count(mouse, MouseIds.Middle);
-                double wt = wheelCount <= 0 ? 0 : Math.Log(1 + wheelCount) / Math.Log(1 + max);
-                Color wheelBase = p.Dark ? Color.FromArgb(54, 63, 82) : Color.FromArgb(208, 214, 224);
-                if (wheelCount > 0) wheelBase = Ui.Blend(wheelBase, p.HeatColor(wt), 0.40f);
-                using (GraphicsPath wp = Ui.RoundRect(wheel, 5))
-                using (LinearGradientBrush wb = new LinearGradientBrush(wheel,
-                    Ui.Blend(wheelBase, Color.White, 0.18f),
-                    Ui.Blend(wheelBase, Color.Black, 0.16f), 90f))
-                {
-                    g.FillPath(wb, wp);
-                    using (Pen pen = new Pen(Ui.WithAlpha(p.TextOn(wheelBase), 90), 1f))
-                    {
-                        g.DrawPath(pen, wp);
-                    }
-                }
-                using (Pen ridge = new Pen(Ui.WithAlpha(p.TextOn(wheelBase), 95), 1f))
-                {
-                    for (int i = 0; i < 3; i++)
-                    {
-                        float yy = wheel.Y + wheel.Height * (0.26f + i * 0.22f);
-                        g.DrawLine(ridge, wheel.X + 2.5f, yy, wheel.Right - 2.5f, yy);
-                    }
-                }
-
-                RectangleF dpi = RectBetween(at(46.5f, 68), at(53.5f, 74));
-                Ui.FillRound(g, dpi, 2, Ui.Blend(bodyTop, bodyBottom, 0.45f));
-                Ui.StrokeRound(g, dpi, 2, p.Border);
-
-                using (Pen border = new Pen(p.BorderStrong, 1.2f))
-                {
-                    g.DrawPath(border, body);
-                }
-                using (Pen hl = new Pen(Color.FromArgb(p.Dark ? 34 : 150, 255, 255, 255), 2f))
-                {
-                    g.DrawBezier(hl, at(50, 4), at(33, 4), at(23, 11), at(20, 26));
-                }
-                using (Pen logo = new Pen(Ui.WithAlpha(p.Border, 150), 1f))
-                {
-                    g.DrawEllipse(logo, RectBetween(at(44, 108), at(56, 122)));
-                }
-                using (SolidBrush dot = new SolidBrush(Ui.WithAlpha(p.Border, 90)))
-                {
-                    g.FillEllipse(dot, RectBetween(at(49, 114), at(51, 116)));
-                }
-
-                DrawSideLabel(g, at, mouse, MouseIds.Back, max, "4", p, 84f);
-                DrawSideLabel(g, at, mouse, MouseIds.Forward, max, "5", p, 116f);
-
-                DrawButtonText(g, at, mouse, MouseIds.Left, 27, 42, "左键", max, p);
-                DrawButtonText(g, at, mouse, MouseIds.Right, 73, 42, "右键", max, p);
-
-                Ui.TextCenter(g, "滚轮", Ui.Label, p.Dim,
-                    Rectangle.Round(RectBetween(at(38, 86), at(62, 96))));
-                Ui.TextLeft(g, "侧键", Ui.Label, p.Dim,
-                    new Rectangle((int)bodyRect.X - 32, (int)at(0, 82).Y, 24, 16));
-            }
-        }
-
-        private static Color ButtonBase(long n, long max, Palette p)
-        {
-            Color neutral = p.Dark ? Ui.Blend(p.Card, Color.White, 0.06f) : Color.White;
-            if (n <= 0) return neutral;
-            double t = Math.Log(1 + n) / Math.Log(1 + max);
-            return Ui.Blend(neutral, p.HeatColor(t), p.Dark ? 0.62f : 0.50f);
-        }
-
-        private static void FillKeyArea(Graphics g, GraphicsPath path, long n, long max, Palette p)
-        {
-            Color baseColor = ButtonBase(n, max, p);
-            using (LinearGradientBrush bg = new LinearGradientBrush(
-                path.GetBounds(),
-                Ui.Blend(baseColor, Color.White, p.Dark ? 0.05f : 0.25f),
-                Ui.Blend(baseColor, Color.Black, 0.12f), 90f))
-            {
-                g.FillPath(bg, path);
-            }
-            using (Pen pen = new Pen(Ui.WithAlpha(p.TextOn(baseColor), 60), 1f))
-            {
-                g.DrawPath(pen, path);
-            }
-        }
-
-        private static void DrawButtonText(Graphics g, Func<float, float, PointF> at,
-            Dictionary<int, long> mouse, int button, float cx, float cy, string label, long max, Palette p)
-        {
-            long n = Count(mouse, button);
-            Color baseColor = ButtonBase(n, max, p);
-            Color fg = p.TextOn(baseColor);
-            RectangleF title = RectBetween(at(cx - 13, cy - 8), at(cx + 13, cy + 3));
-            RectangleF value = RectBetween(at(cx - 13, cy + 5), at(cx + 13, cy + 16));
-            Ui.TextCenter(g, label, Ui.BodySmall, fg, Rectangle.Round(title));
-            Ui.TextCenter(g, Charts.Number(n), Ui.Label, fg, Rectangle.Round(value));
-        }
-
-        private static void DrawSideButton(Graphics g, Func<float, float, PointF> at,
-            Dictionary<int, long> mouse, int button, long max, Palette p, float top)
-        {
-            Color fill = ButtonBase(Count(mouse, button), max, p);
-            using (GraphicsPath tab = new GraphicsPath())
-            {
-                tab.AddBezier(at(14, top), at(4, top - 1), at(-10, top + 4), at(-10, top + 10));
-                tab.AddLine(at(-10, top + 10), at(-10, top + 18));
-                tab.AddBezier(at(-10, top + 18), at(-10, top + 24), at(2, top + 28), at(14, top + 28));
-                tab.AddLine(at(14, top + 28), at(14, top));
-                tab.CloseFigure();
-
-                Ui.FillPathColor(g, tab, fill);
-                Ui.StrokePath(g, tab, p.Border, 1f);
-            }
-        }
-
-        private static void DrawSideLabel(Graphics g, Func<float, float, PointF> at,
-            Dictionary<int, long> mouse, int button, long max, string label, Palette p, float top)
-        {
-            Color fill = ButtonBase(Count(mouse, button), max, p);
-            RectangleF text = RectBetween(at(-7, top + 8), at(10, top + 20));
-            Ui.TextCenter(g, label, Ui.KeyFontSmall, p.TextOn(fill), Rectangle.Round(text));
-        }
-
-        private static RectangleF RectBetween(PointF a, PointF b)
-        {
-            return new RectangleF(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
-                Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
-        }
+        // ---------------------------------------------------------------- 数据辅助
 
         private static long Count(Dictionary<int, long> mouse, int button)
         {
             long v;
             return mouse != null && mouse.TryGetValue(button, out v) ? v : 0;
-        }
-
-        private static long Sum(Dictionary<int, long> mouse)
-        {
-            long n = 0;
-            if (mouse != null) foreach (long v in mouse.Values) n += v;
-            return n;
         }
 
         private static long WheelSum(Dictionary<int, long> mouse)
@@ -412,38 +627,17 @@ namespace KeyInsight.UI.Pages
             return n;
         }
 
+        /// <summary>最常用按键仅统计物理键 1..5，滚轮单独排名（复审方案 §2.4）。</summary>
         private static int TopButton(Dictionary<int, long> mouse)
         {
             int best = 0;
             long max = 0;
-            if (mouse != null)
+            for (int b = MouseIds.Left; b <= MouseIds.Forward; b++)
             {
-                foreach (KeyValuePair<int, long> kv in mouse)
-                {
-                    if (kv.Value > max) { max = kv.Value; best = kv.Key; }
-                }
+                long v = Count(mouse, b);
+                if (v > max) { max = v; best = b; }
             }
             return best;
-        }
-
-        private static List<RankRow> MouseRows(Dictionary<int, long> mouse)
-        {
-            List<KeyValuePair<int, long>> list = new List<KeyValuePair<int, long>>(mouse);
-            list.Sort(delegate(KeyValuePair<int, long> a, KeyValuePair<int, long> b)
-            {
-                if (a.Value != b.Value) return b.Value.CompareTo(a.Value);
-                return a.Key.CompareTo(b.Key);
-            });
-            List<RankRow> rows = new List<RankRow>();
-            for (int i = 0; i < list.Count; i++)
-            {
-                if (list[i].Value <= 0) continue;
-                RankRow row = new RankRow();
-                row.Label = MouseNames.Full(list[i].Key);
-                row.Value = list[i].Value;
-                rows.Add(row);
-            }
-            return rows;
         }
 
         private static List<RankRow> AppRows(Dictionary<string, AppAgg> apps)
@@ -451,7 +645,9 @@ namespace KeyInsight.UI.Pages
             List<KeyValuePair<string, long>> list = new List<KeyValuePair<string, long>>();
             foreach (KeyValuePair<string, AppAgg> kv in apps)
             {
-                long n = Sum(kv.Value.Mouse);
+                long n = 0;
+                Dictionary<int, long> m = kv.Value.Mouse;
+                if (m != null) foreach (long v in m.Values) n += v;
                 if (n > 0) list.Add(new KeyValuePair<string, long>(kv.Key, n));
             }
             list.Sort(delegate(KeyValuePair<string, long> a, KeyValuePair<string, long> b)
@@ -481,10 +677,71 @@ namespace KeyInsight.UI.Pages
             }
         }
 
+        // ---------------------------------------------------------------- 交互
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button == MouseButtons.Left) HandleRangeClick(ToContent(e.Location));
+            if (e.Button != MouseButtons.Left) return;
+            Point pt = ToContent(e.Location);
+            if (HandleRangeClick(pt)) return;
+
+            // 排行行：点击高亮对应热区
+            for (int i = 0; i < _rankRects.Count && i < _rankEntries.Count; i++)
+            {
+                if (_rankRects[i].Contains(pt))
+                {
+                    int btn = _rankEntries[i].Button;
+                    _selectedButton = _selectedButton == btn ? 0 : btn;
+                    Invalidate();
+                    return;
+                }
+            }
+
+            // 鼠标热区：点击切换保持高亮（命中区与显示热区同一几何）
+            if (_mouseBodyValid)
+            {
+                PointF norm = NormPoint(pt, _mouseBody);
+                for (int i = 0; i < Zones.Length; i++)
+                {
+                    if (Zones[i].Path.IsVisible(norm))
+                    {
+                        int btn = Zones[i].Button;
+                        _selectedButton = _selectedButton == btn ? 0 : btn;
+                        Invalidate();
+                        return;
+                    }
+                }
+            }
         }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!_mouseBodyValid) return;
+            PointF norm = NormPoint(ToContent(e.Location), _mouseBody);
+            int hover = 0;
+            for (int i = 0; i < Zones.Length; i++)
+            {
+                if (Zones[i].Path.IsVisible(norm)) { hover = Zones[i].Button; break; }
+            }
+            if (hover != _hoverZonePending)
+            {
+                _hoverZonePending = hover;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hoverZonePending != 0)
+            {
+                _hoverZonePending = 0;
+                Invalidate();
+            }
+        }
+
+        private int _hoverZonePending;
     }
 }

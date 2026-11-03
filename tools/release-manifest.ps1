@@ -3,11 +3,13 @@ param(
     [string]$SetupPath = "",
     [string]$PortablePath = "",
     [string]$PrivateKeyPath = "",
-    [string]$OutputDir = "update"
+    [string]$OutputDir = "update",
+    [string]$OutputName = "KeyInsight-update.json"
 )
 
-# PR-7：发布清单生成 + 签名（路线图 §8.2）。
-# 生成 manifest.json（含 SHA-256/长度/多线路 URL），签名输出 manifest.sig。
+# PR-7 + 复审方案 §3.3：发布清单生成 + 签名。
+# 生成固定名 KeyInsight-update.json（含 SHA-256/长度/官方 URL），签名输出 .sig，
+# 两者作为 Release 资产上传（releases/latest/download/ 固定名发现，不依赖 api.github.com）。
 # 签名私钥不入库；生产环境通过 GitHub Secret UPDATE_SIGNING_KEY_XML 传入。
 
 $ErrorActionPreference = 'Stop'
@@ -74,6 +76,8 @@ $manifest = @"
   "version": "$Version",
   "publishedAt": "$(DateTime.UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))",
   "rolloutPercent": 100,
+  "minUpgradeFrom": null,
+  "revoked": [],
   "assets": [
     {
       "id": "windows-x64-setup",
@@ -101,11 +105,11 @@ $manifest = @"
 "@
 
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
-$manifestPath = Join-Path $OutputDir "manifest.json"
+$manifestPath = Join-Path $OutputDir $OutputName
 [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
 $sig = & $exePath "sign" $manifestPath $PrivateKeyPath
-$manifestSigPath = Join-Path $OutputDir "manifest.sig"
+$manifestSigPath = $manifestPath + ".sig"
 [System.IO.File]::WriteAllText($manifestSigPath, $sig + "`n")
 
 Write-Host "manifest: $manifestPath"
@@ -113,5 +117,5 @@ Write-Host "signature: $manifestSigPath"
 Write-Host "setup sha256: $setupSha"
 Write-Host "portable sha256: $portSha"
 Write-Host ""
-Write-Host "NEXT: 上传 manifest.json + manifest.sig 到受信路线（如 GitHub raw / 自有域名），"
-Write-Host "并同步 Setup/portable 到 OSS/COS 镜像（tools/sync-mirrors.ps1）"
+Write-Host "NEXT: 将 $OutputName 与 .sig 作为 Release 资产上传（固定名，releases/latest/download 发现）；"
+Write-Host "Setup/portable 可同步到 OSS/COS 镜像（tools/sync-mirrors.ps1），客户端按前缀自动展开候选线路"

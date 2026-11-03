@@ -29,12 +29,16 @@ namespace KeyInsight.UI.Pages
         private Rectangle _routeDiagRect;
         private long _updateDone;
         private long _updateTotal;
+        private double _speedBps;               // 下载即时速度（进度回调采样）
         private bool _updateRunning;
         private string _updateStateText = "空闲";
         private string _updateResultText = "";
 
         public override string Title { get { return "高级与设备"; } }
         public override string Subtitle { get { return "钩子状态、采集与诊断开关、输入设备画像（仅统计）"; } }
+
+        // 控件卡 420 + 更新线路卡 6 行 ~250；小窗走滚动而非压缩
+        protected override int MinContentHeight { get { return 780; } }
 
         public AdvancedPage(IShellActions shell)
         {
@@ -51,7 +55,7 @@ namespace KeyInsight.UI.Pages
             int leftW = (Width - gap) / 2;
             int rightW = Width - leftW - gap;
             int cardH = Math.Min(420, ContentH - y - 16);
-            int updateH = Math.Min(200, ContentH - y - cardH - gap * 2);
+            int updateH = Math.Min(260, ContentH - y - cardH - gap * 2);
             if (updateH < 130) updateH = 130;
 
             DrawControls(g, new Rectangle(0, y, leftW, cardH), p);
@@ -62,19 +66,19 @@ namespace KeyInsight.UI.Pages
         private void DrawUpdateCard(Graphics g, Rectangle card, Palette p)
         {
             SectionCard(g, card, "更新与线路",
-                "签名清单 + 多线路下载 + 独立更新器 + 失败回滚（路线图 PR-4/5/6）");
+                "固定名签名清单 · 多线路自动择优 · 独立更新器 + 失败回滚");
 
             int x = card.X + 18;
             int w = card.Width - 36;
             int y = card.Y + 56;
 
-            // 状态行
+            // 状态行（复审方案 §3.5：当前线路可见、失败阶段可解释）
             string stateLabel = "状态";
             string stateValue = _updateRunning ? _updateStateText : ("空闲 · " + _updateResultText);
             if (!_updateRunning && _updateResultText.Length == 0) stateValue = "空闲";
             Color sc = _updateRunning ? p.Info : p.Muted;
             Ui.TextLeft(g, stateLabel, Ui.BodySmall, p.Muted, new Rectangle(x, y, 50, 20));
-            Ui.TextLeftEllipsis(g, stateValue, Ui.BodySmall, sc, new Rectangle(x + 54, y, w - 54 - 260, 20));
+            Ui.TextLeftEllipsis(g, stateValue, Ui.BodySmall, sc, new Rectangle(x + 54, y, w - 54 - 300, 20));
 
             // 操作按钮
             bool canInstall = _shell.Updater != null && _shell.Updater.State ==
@@ -87,45 +91,64 @@ namespace KeyInsight.UI.Pages
             Charts.Button(g, _routeDiagRect, "线路诊断", false, p);
             y += 34;
 
-            // 下载进度条
+            // 下载进度条（速度 + 剩余时间）
             if (_updateRunning && _updateTotal > 0)
             {
                 double frac = Math.Min(1.0, _updateDone / (double)_updateTotal);
                 Ui.TextLeft(g, "下载", Ui.BodySmall, p.Muted, new Rectangle(x, y, 50, 20));
-                Rectangle bar = new Rectangle(x + 54, y + 4, w - 54 - 100, 12);
+                Rectangle bar = new Rectangle(x + 54, y + 4, w - 54 - 190, 12);
                 Ui.FillRound(g, bar, 6, p.HeatEmpty);
                 if (frac > 0)
                 {
                     Ui.FillRound(g, new RectangleF(bar.X, bar.Y, bar.Width * (float)frac, bar.Height), 6, p.Accent1);
                 }
-                Ui.TextRight(g, (_updateDone / 1024) + " / " + (_updateTotal / 1024) + " KB",
-                    Ui.Label, p.Dim, new Rectangle(x + w - 96, y, 96, 20));
+                string speedText = _speedBps > 0 ? FormatSpeed(_speedBps) : "—";
+                double etaSec = _speedBps > 0 ? (_updateTotal - _updateDone) / _speedBps : -1;
+                string etaText = etaSec > 0 ? " · 约 " + (int)Math.Ceiling(etaSec) + " 秒" : "";
+                Ui.TextRight(g, speedText + etaText + " · " +
+                    (_updateDone / 1024) + "/" + (_updateTotal / 1024) + " KB",
+                    Ui.Label, p.Dim, new Rectangle(x + w - 240, y, 240, 20));
                 y += 26;
             }
 
-            // 线路列表（前 5 条）
+            // 线路列表：线路 / 延迟 / 速度 / 状态 / 评分（复审方案 §B-4）
             if (_shell.RouteCatalog != null)
             {
+                string currentRoute = _shell.Updater != null ? _shell.Updater.LastRouteName : "";
                 List<KeyInsight.Update.Routing.RouteEndpoint> routes = _shell.RouteCatalog.Routes;
-                int shown = Math.Min(routes.Count, 5);
-                for (int i = 0; i < shown; i++)
+                for (int i = 0; i < routes.Count; i++)
                 {
                     KeyInsight.Update.Routing.RouteEndpoint r = routes[i];
                     KeyInsight.Update.Routing.RouteHealth h = _shell.RouteCatalog.HealthOf(r);
                     double score = KeyInsight.Update.Routing.RouteScorer.Score(h) * 100;
+                    bool isCurrent = !string.IsNullOrEmpty(currentRoute) &&
+                        string.Equals(currentRoute, r.Name, StringComparison.Ordinal);
                     string health = h.State.ToString();
-                    Color hc = h.State == KeyInsight.Update.Routing.RouteHealthState.Healthy ? p.Good
+                    if (isCurrent) health = "当前使用";
+                    Color hc = isCurrent ? p.Accent1
+                        : h.State == KeyInsight.Update.Routing.RouteHealthState.Healthy ? p.Good
                         : h.State == KeyInsight.Update.Routing.RouteHealthState.Quarantined ? p.Bad
                         : h.State == KeyInsight.Update.Routing.RouteHealthState.OpenCircuit ? p.Warn
                         : p.Muted;
+                    string ttfb = h.LastTtfbMs >= 0 ? ((int)h.LastTtfbMs).ToString() + " ms" : "—";
+                    string speed = h.LastThroughputBytesPerSec > 0
+                        ? FormatSpeed(h.LastThroughputBytesPerSec) : "—";
                     int ry = y + i * 22;
                     Ui.DrawDot(g, x + 5, ry + 10, 3, hc);
-                    Ui.TextLeft(g, r.Name, Ui.BodySmall, p.Text, new Rectangle(x + 16, ry, 120, 20));
-                    Ui.TextLeft(g, health, Ui.Label, hc, new Rectangle(x + 140, ry, 90, 20));
+                    Ui.TextLeft(g, r.Name, Ui.BodySmall, p.Text, new Rectangle(x + 16, ry, 128, 20));
+                    Ui.TextLeft(g, ttfb, Ui.Label, p.Muted, new Rectangle(x + 146, ry, 62, 20));
+                    Ui.TextLeft(g, speed, Ui.Label, p.Muted, new Rectangle(x + 210, ry, 96, 20));
+                    Ui.TextLeft(g, health, Ui.Label, hc, new Rectangle(x + 308, ry, 86, 20));
                     Ui.TextRight(g, score.ToString("F0") + " 分", Ui.Label, p.Muted,
                         new Rectangle(x + w - 80, ry, 80, 20));
                 }
             }
+        }
+
+        private static string FormatSpeed(double bytesPerSec)
+        {
+            if (bytesPerSec >= 1024 * 1024) return (bytesPerSec / 1024.0 / 1024.0).ToString("F1") + " MB/s";
+            return Math.Max(1, bytesPerSec / 1024.0).ToString("F0") + " KB/s";
         }
 
         private void DrawControls(Graphics g, Rectangle card, Palette p)
@@ -237,6 +260,9 @@ namespace KeyInsight.UI.Pages
             _updateStateText = "检查中…";
             _updateDone = 0;
             _updateTotal = 0;
+            _speedBps = 0;
+            long lastDone = 0;
+            long lastTicks = Stopwatch.GetTimestamp();
 
             _shell.Updater.StateChanged += delegate(KeyInsight.Update.Orchestration.UpdateState st, string detail)
             {
@@ -245,6 +271,14 @@ namespace KeyInsight.UI.Pages
             };
             _shell.Updater.DownloadProgress += delegate(long done, long total)
             {
+                long now = Stopwatch.GetTimestamp();
+                double sec = (now - lastTicks) / (double)Stopwatch.Frequency;
+                if (sec >= 0.35 && done >= lastDone)
+                {
+                    _speedBps = (done - lastDone) / sec;
+                    lastDone = done;
+                    lastTicks = now;
+                }
                 _updateDone = done;
                 _updateTotal = total;
                 Invalidate();
@@ -255,13 +289,20 @@ namespace KeyInsight.UI.Pages
                 try
                 {
                     Version current = new Version(AppInfo.Version);
+                    // 复审方案 §3.6：portable 安装形态下载 portable zip 原样升级
+                    bool setupInstall = File.Exists(Path.Combine(
+                        AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
+                    string assetId = setupInstall ? "windows-x64-setup" : "windows-x64-portable";
                     bool ready = _shell.Updater.CheckAndDownload(current, "stable",
-                        _shell.Cfg.UpdateCohort, "windows-x64-setup");
+                        _shell.Cfg.UpdateCohort, assetId);
                     _shell.Updater.SaveRouteHealth();
+                    string via = string.IsNullOrEmpty(_shell.Updater.LastRouteName)
+                        ? "" : "（经由 " + _shell.Updater.LastRouteName + "）";
                     _updateResultText = ready
-                        ? "安装包已就绪，点击「安装并重启」完成更新"
+                        ? "安装包已就绪并通过 SHA-256 校验" + via + "，点击「安装并重启」完成更新"
                         : (_shell.Updater.State == KeyInsight.Update.Orchestration.UpdateState.UpToDate
-                            ? "已是最新版本" : "更新失败：" + (_shell.Updater.LastError ?? "未知"));
+                            ? "已是最新版本" + via
+                            : "更新失败：" + (_shell.Updater.LastError ?? "未知"));
                 }
                 catch (Exception ex)
                 {
@@ -288,11 +329,9 @@ namespace KeyInsight.UI.Pages
                 return;
             }
 
-            bool isPortable = true; // 3.2 起默认保持 portable 形态
-            string package = File.Exists(Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory, "unins000.exe")) ? "setup" : "portable";
-            if (!isPortable && package == "portable") { /* 便携版升级 */ }
-
+            bool setupInstall = File.Exists(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
+            string package = setupInstall ? "setup" : "portable";
             string nonce = Guid.NewGuid().ToString("N");
             string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
 

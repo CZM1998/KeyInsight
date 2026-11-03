@@ -123,6 +123,7 @@ namespace KeyInsight.Tests
             KeyInsight.Tests.Core.KeyStateMachineTests.Register();
             KeyInsight.Tests.Core.ProfileAndStrategyTests.Register();
             KeyInsight.Tests.Core.ModuleCompletionTests.Register();
+            KeyInsight.Tests.Core.WheelAccumulatorTests.Register();
             KeyInsight.Tests.Telemetry.TelemetryTests.Register();
             KeyInsight.Tests.Storage.KdsCompatibilityTests.Register();
             KeyInsight.Tests.Storage.CsvSnapshotTests.Register();

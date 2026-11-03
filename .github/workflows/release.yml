@@ -69,6 +69,28 @@ jobs:
           }
           $lines | Set-Content "dist\sha256.txt" -Encoding ascii
 
+      # 复审方案 §3.3：生成固定名签名清单 KeyInsight-update.json/.sig 并随 Release 上传。
+      # 客户端通过 releases/latest/download/ 固定名发现版本（不依赖 api.github.com）。
+      # 签名私钥来自受保护 Secret UPDATE_SIGNING_KEY_XML（RSA-3072 XML，tools/generate-update-keys.ps1 生成）。
+      - name: Signed update manifest
+        shell: powershell
+        env:
+          UPDATE_SIGNING_KEY_XML: ${{ secrets.UPDATE_SIGNING_KEY_XML }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:UPDATE_SIGNING_KEY_XML)) {
+            Write-Host "::warning::UPDATE_SIGNING_KEY_XML secret not set — skip manifest signing"
+            exit 0
+          }
+          $keyDir = Join-Path $env:RUNNER_TEMP "update-keys"
+          New-Item -ItemType Directory -Force $keyDir | Out-Null
+          $keyPath = Join-Path $keyDir "update-private-key.xml"
+          [System.IO.File]::WriteAllText($keyPath, $env:UPDATE_SIGNING_KEY_XML)
+          .\tools\release-manifest.ps1 -Version ${{ steps.version.outputs.value }} `
+            -SetupPath "dist\KeyInsight-Setup-${{ steps.version.outputs.value }}.exe" `
+            -PortablePath "KeyInsight-${{ steps.version.outputs.value }}-portable.zip" `
+            -PrivateKeyPath $keyPath -OutputDir dist
+          Remove-Item $keyPath -Force
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -76,4 +98,7 @@ jobs:
             dist/KeyInsight-Setup-${{ steps.version.outputs.value }}.exe
             KeyInsight-${{ steps.version.outputs.value }}-portable.zip
             dist/sha256.txt
+            dist/KeyInsight-update.json
+            dist/KeyInsight-update.json.sig
           generate_release_notes: true
+          fail_on_unmatched_files: false
