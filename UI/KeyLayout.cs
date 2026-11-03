@@ -57,6 +57,9 @@ namespace KeyInsight.UI
         // P1-05：ISO 变体（左 Shift 变窄 + "<>" 键；右 Shift 相应缩短）
         public static KeyLayoutDef Layout87Iso { get; private set; }
         public static KeyLayoutDef Layout108Iso { get; private set; }
+        // PR-10：75% 紧凑（无 F 行独立区/导航/小键盘）与 96% 紧凑（全尺寸无小键盘间隙）
+        public static KeyLayoutDef Layout75 { get; private set; }
+        public static KeyLayoutDef Layout96 { get; private set; }
 
         static KeyLayout()
         {
@@ -71,6 +74,9 @@ namespace KeyInsight.UI
             Layout87Iso = new KeyLayoutDef("87 键 ISO", "87 ISO", 18.75f, list87Iso);
             List<KeyDef> list108Iso = BuildIsoVariant(list108);
             Layout108Iso = new KeyLayoutDef("108 键 ISO", "108 ISO", 23.25f, list108Iso);
+
+            Layout75 = BuildLayout75();
+            Layout96 = BuildLayout96();
 
             SetLabel(0x60, "Num 0"); SetLabel(0x61, "Num 1"); SetLabel(0x62, "Num 2");
             SetLabel(0x63, "Num 3"); SetLabel(0x64, "Num 4"); SetLabel(0x65, "Num 5");
@@ -147,6 +153,95 @@ namespace KeyInsight.UI
             Add(list, "→", 17.75f, 5f, 1f, 0x27);
 
             return list;
+        }
+
+        /// <summary>75% 紧凑布局：F 行合并到数字行（Fn 层），无导航区和小键盘；~15.75u 宽。</summary>
+        private static KeyLayoutDef BuildLayout75()
+        {
+            List<KeyDef> list = new List<KeyDef>();
+            // Row 0: Esc + F1-F12 (紧凑到主区)
+            Add(list, "Esc", 0f, 0f, 1f, 0x1B);
+            for (int i = 0; i < 12; i++) Add(list, "F" + (i + 1), 1.25f + i, 0f, 1f, 0x70 + i);
+            Add(list, "Del", 14f, 0f, 1f, 0x2E);
+
+            // Row 1: 数字行
+            Add(list, "`", 0f, 1f, 1f, 0xC0);
+            string[] digits = new string[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
+            int[] digitVks = new int[] { 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30 };
+            for (int i = 0; i < 10; i++) Add(list, digits[i], 1f + i, 1f, 1f, digitVks[i]);
+            Add(list, "-", 11f, 1f, 1f, 0xBD);
+            Add(list, "=", 12f, 1f, 1f, 0xBB);
+            Add(list, "Back", 13f, 1f, 2f, 0x08);
+            Add(list, "Home", 15.25f, 1f, 1f, 0x24);
+
+            // Row 2: QWERTY
+            Add(list, "Tab", 0f, 2f, 1.5f, 0x09);
+            string[] qrow = new string[] { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" };
+            int[] qvks = new int[] { 0x51, 0x57, 0x45, 0x52, 0x54, 0x59, 0x55, 0x49, 0x4F, 0x50 };
+            for (int i = 0; i < 10; i++) Add(list, qrow[i], 1.5f + i, 2f, 1f, qvks[i]);
+            Add(list, "[", 11.5f, 2f, 1f, 0xDB);
+            Add(list, "]", 12.5f, 2f, 1f, 0xDD);
+            Add(list, "\\", 13.5f, 2f, 1.5f, 0xDC);
+            Add(list, "End", 15.25f, 2f, 1f, 0x23);
+
+            // Row 3: ASDF
+            Add(list, "Caps", 0f, 3f, 1.75f, 0x14);
+            string[] arow = new string[] { "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'" };
+            int[] avks = new int[] { 0x41, 0x53, 0x44, 0x46, 0x47, 0x48, 0x4A, 0x4B, 0x4C, 0xBA, 0xDE };
+            for (int i = 0; i < 11; i++) Add(list, arow[i], 1.75f + i, 3f, 1f, avks[i]);
+            Add(list, "Enter", 12.75f, 3f, 2.25f, 0x0D);
+            Add(list, "PgUp", 15.25f, 3f, 1f, 0x21);
+
+            // Row 4: ZXCV
+            Add(list, "Shift", 0f, 4f, 2.25f, 0xA0);
+            string[] zrow = new string[] { "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/" };
+            int[] zvks = new int[] { 0x5A, 0x58, 0x43, 0x56, 0x42, 0x4E, 0x4D, 0xBC, 0xBE, 0xBF };
+            for (int i = 0; i < 10; i++) Add(list, zrow[i], 2.25f + i, 4f, 1f, zvks[i]);
+            Add(list, "Shift", 12.25f, 4f, 2.75f, 0xA1);
+            Add(list, "↑", 15.25f, 4f, 1f, 0x26);
+            Add(list, "PgDn", 16.25f, 4f, 1f, 0x22);
+
+            // Row 5: 底行
+            Add(list, "Ctrl", 0f, 5f, 1.25f, 0xA2);
+            Add(list, "Win", 1.25f, 5f, 1.25f, 0x5B);
+            Add(list, "Alt", 2.5f, 5f, 1.25f, 0xA4);
+            Add(list, "Space", 3.75f, 5f, 6.25f, 0x20);
+            Add(list, "Alt", 10f, 5f, 1.25f, 0xA5);
+            Add(list, "Fn", 11.25f, 5f, 1f, 0xFF);
+            Add(list, "Ctrl", 12.25f, 5f, 1.25f, 0xA3);
+            Add(list, "←", 13.75f, 5f, 1f, 0x25);
+            Add(list, "↓", 14.75f, 5f, 1f, 0x28);
+            Add(list, "→", 15.75f, 5f, 1f, 0x27);
+
+            return new KeyLayoutDef("75% 紧凑", "75%", 17.25f, list);
+        }
+
+        /// <summary>96% 紧凑布局：全尺寸主区 + 无间隙小键盘（1800 紧凑）。</summary>
+        private static KeyLayoutDef BuildLayout96()
+        {
+            List<KeyDef> list = new List<KeyDef>(BuildBase());
+            // 96% = 108 键去掉 Vol/Calc 和 PrtSc 组 + 把导航键紧贴主区
+            List<KeyDef> trimmed = new List<KeyDef>();
+            foreach (KeyDef k in list)
+            {
+                // 去掉 PrtSc/ScrLk/Pause 和 Mute/Vol/Calc
+                if (k.Y == 0f && (k.Label == "PrtSc" || k.Label == "ScrLk" || k.Label == "Pause" ||
+                    k.Label == "Mute" || k.Label == "Vol-" || k.Label == "Vol+" || k.Label == "Calc")) continue;
+                trimmed.Add(k);
+            }
+            // 导航键移到 15.75u 位置（小键盘正左侧无间隙）
+            for (int i = 0; i < trimmed.Count; i++)
+            {
+                KeyDef k = trimmed[i];
+                if (k.X >= 15.75f && k.X < 18.75f && k.Vks.Length == 1 &&
+                    (k.Vks[0] == 0x2D || k.Vks[0] == 0x24 || k.Vks[0] == 0x21 ||
+                     k.Vks[0] == 0x2E || k.Vks[0] == 0x23 || k.Vks[0] == 0x22 ||
+                     k.Vks[0] == 0x26 || k.Vks[0] == 0x25 || k.Vks[0] == 0x28 || k.Vks[0] == 0x27))
+                {
+                    k.X -= 0.25f; // 紧凑间距
+                }
+            }
+            return new KeyLayoutDef("96% 紧凑", "96%", 22.75f, trimmed);
         }
 
         /// <summary>ISO 变体：左 Shift 2.25u → 1.25u，插入 1u "&lt;&gt;" 键（VK_OEM_102），右 Shift 2.75u → 1.75u。</summary>

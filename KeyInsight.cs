@@ -90,6 +90,13 @@ namespace KeyInsight
             {
                 return MigrateDataRunner.Run();
             }
+            // 独立更新器健康心跳（路线图 PR-6）：启动成功后写入 nonce 供 updater 校验
+            string healthNonce = "";
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "--health-nonce") healthNonce = args[++i];
+            }
+
             if (args.Length >= 3 && string.Equals(args[0], "--gen-data", StringComparison.OrdinalIgnoreCase))
             {
                 int months = int.Parse(args[2]);
@@ -136,13 +143,33 @@ namespace KeyInsight
                 MouseHook mouseHook = new MouseHook(cfg, sink);
                 HookSupervisor supervisor = new HookSupervisor(hook, mouseHook);
                 supervisor.StartAll();
+
+                // PR-6：更新后健康心跳——钩子成功安装即写入 nonce，独立 updater 据此判定回滚/成功
+                if (healthNonce.Length > 0)
+                {
+                    try
+                    {
+                        string healthDir = Path.Combine(dataDir, "v2");
+                        if (!Directory.Exists(healthDir)) Directory.CreateDirectory(healthDir);
+                        File.WriteAllText(Path.Combine(healthDir, "health.json"),
+                            "{\"nonce\":\"" + healthNonce.Replace("\"", "") + "\",\"utcTicks\":" + DateTime.UtcNow.Ticks + "}");
+                    }
+                    catch { }
+                }
                 RawInputTracker rawInput = new RawInputTracker(Path.Combine(dataDir, "v2"));
                 rawInput.Start();
+
+                // PR-5/6：更新编排器 + 路线目录（staging 在 data/update-staging，与用户数据隔离）
+                KeyInsight.Update.Routing.RouteCatalog routeCatalog =
+                    new KeyInsight.Update.Routing.RouteCatalog(Path.Combine(dataDir, "v2", "route-health.json"));
+                KeyInsight.Update.Orchestration.UpdateOrchestrator orchestrator =
+                    new KeyInsight.Update.Orchestration.UpdateOrchestrator(
+                        routeCatalog, Path.Combine(dataDir, "update-staging"), null);
 
                 try
                 {
                     using (TrayContext tray = new TrayContext(cfg, stats, hook, mouseHook,
-                        keyPolicies, rawInput, supervisor, sink))
+                        keyPolicies, rawInput, supervisor, sink, orchestrator, routeCatalog))
                     {
                         Application.Run(tray);
                     }
@@ -185,6 +212,8 @@ namespace KeyInsight
         private readonly RawInputTracker _rawInput;
         private readonly HookSupervisor _supervisor;
         private readonly StatsEngineSink _sink;
+        private readonly KeyInsight.Update.Orchestration.UpdateOrchestrator _updater;
+        private readonly KeyInsight.Update.Routing.RouteCatalog _routeCatalog;
         private FloatingSummaryForm _floating;
         private readonly NotifyIcon _icon;
         private readonly ToolStripMenuItem _openItem;
@@ -200,7 +229,9 @@ namespace KeyInsight
         private string _lastUpdateCheckResult;
 
         public TrayContext(Config cfg, StatsEngine stats, DebounceHook hook, MouseHook mouseHook,
-            KeyPolicyStore keyPolicies, RawInputTracker rawInput, HookSupervisor supervisor, StatsEngineSink sink)
+            KeyPolicyStore keyPolicies, RawInputTracker rawInput, HookSupervisor supervisor, StatsEngineSink sink,
+            KeyInsight.Update.Orchestration.UpdateOrchestrator updater,
+            KeyInsight.Update.Routing.RouteCatalog routeCatalog)
         {
             _cfg = cfg;
             _stats = stats;
@@ -210,6 +241,8 @@ namespace KeyInsight
             _rawInput = rawInput;
             _supervisor = supervisor;
             _sink = sink;
+            _updater = updater;
+            _routeCatalog = routeCatalog;
             _sync = SynchronizationContext.Current;
 
             ContextMenuStrip menu = new ContextMenuStrip();
@@ -338,7 +371,8 @@ namespace KeyInsight
             if (_form == null || _form.IsDisposed)
             {
                 _form = new DashboardForm(_stats, _cfg, _hook, _mouseHook,
-                    delegate { BeginUpdateCheck(true); }, _keyPolicies, _rawInput, _supervisor, _sink);
+                    delegate { BeginUpdateCheck(true); }, _keyPolicies, _rawInput, _supervisor, _sink,
+                    _updater, _routeCatalog);
             }
             _form.Show();
             if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;

@@ -14,6 +14,8 @@ namespace KeyInsight.UI
         PolicySnapshot PolicyStatus { get; }
         RawInputTracker RawInput { get; }
         HookSupervisor Supervisor { get; }
+        KeyInsight.Update.Orchestration.UpdateOrchestrator Updater { get; }
+        KeyInsight.Update.Routing.RouteCatalog RouteCatalog { get; }
         long TelemetryDropped { get; }
         bool CaptureEnabled { get; }
         bool DiagnosticsEnabled { get; }

@@ -32,6 +32,8 @@ namespace KeyInsight.UI
         private readonly RawInputTracker _rawInput;
         private readonly HookSupervisor _supervisor;
         private readonly Core.Telemetry.StatsEngineSink _sink;
+        private readonly KeyInsight.Update.Orchestration.UpdateOrchestrator _updater;
+        private readonly KeyInsight.Update.Routing.RouteCatalog _routeCatalog;
         private readonly Action _checkUpdates;
         private readonly PageBase[] _pages;
         // 5 个一级入口（设计 §9 整合）：多页分组用顶部标签切换
@@ -77,19 +79,28 @@ namespace KeyInsight.UI
         public bool ScreenshotMode;
 
         public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook, Action checkUpdates)
-            : this(source, cfg, hook, mouseHook, checkUpdates, null, null, null, null)
+            : this(source, cfg, hook, mouseHook, checkUpdates, null, null, null, null, null, null)
         {
         }
 
         public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook,
             Action checkUpdates, KeyPolicyStore keyPolicies, RawInputTracker rawInput)
-            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, null, null)
+            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, null, null, null, null)
         {
         }
 
         public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook,
             Action checkUpdates, KeyPolicyStore keyPolicies, RawInputTracker rawInput,
             HookSupervisor supervisor, Core.Telemetry.StatsEngineSink sink)
+            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, supervisor, sink, null, null)
+        {
+        }
+
+        public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook,
+            Action checkUpdates, KeyPolicyStore keyPolicies, RawInputTracker rawInput,
+            HookSupervisor supervisor, Core.Telemetry.StatsEngineSink sink,
+            KeyInsight.Update.Orchestration.UpdateOrchestrator updater,
+            KeyInsight.Update.Routing.RouteCatalog routeCatalog)
         {
             _source = source;
             _cfg = cfg;
@@ -100,6 +111,8 @@ namespace KeyInsight.UI
             _rawInput = rawInput;
             _supervisor = supervisor;
             _sink = sink;
+            _updater = updater;
+            _routeCatalog = routeCatalog;
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
@@ -167,6 +180,8 @@ namespace KeyInsight.UI
         public bool CaptureEnabled { get { return _cfg.CaptureEnabled; } }
         public bool DiagnosticsEnabled { get { return _cfg.DiagnosticsEnabled; } }
         public bool FloatingSummaryOn { get { return _cfg.FloatingSummary; } }
+        public KeyInsight.Update.Orchestration.UpdateOrchestrator Updater { get { return _updater; } }
+        public KeyInsight.Update.Routing.RouteCatalog RouteCatalog { get { return _routeCatalog; } }
 
         public void SetCaptureEnabled(bool on)
         {

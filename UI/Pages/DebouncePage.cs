@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 using KeyInsight.Stats;
+using KeyInsight.Update.Routing;
 
 namespace KeyInsight.UI.Pages
 {
@@ -124,6 +125,49 @@ namespace KeyInsight.UI.Pages
                     new Rectangle(r.X + 124, y, r.Width - 260, rowH));
                 Ui.TextRight(g, s.GapDown.ToString("F1") + " ms", Ui.Mono, p.Muted,
                     new Rectangle(r.Right - 90, y, 90, rowH));
+            }
+        }
+
+        /// <summary>PR-8：阈值模拟——用拦截间隔直方图估算不同阈值下的过滤影响。</summary>
+        private void DrawThresholdSimulation(Graphics g, Rectangle r, Palette p)
+        {
+            Ui.TextLeft(g, "阈值模拟（PR-8）", Ui.BodySmall, p.Muted, new Rectangle(r.X, r.Y - 4, 200, 20));
+
+            SwallowGapHist hist = null;
+            if (Snap != null && Snap.GapHistograms != null &&
+                Snap.GapHistograms.TryGetValue(0x45, out hist) && hist.Count > 0)
+            {
+                SimulationResult result = PolicySimulator.Simulate(0x45, Snap);
+                int rowH = 18;
+                int maxRows = Math.Max(1, (r.Height - 24) / rowH);
+                int count = Math.Min(result.Rows.Count, maxRows);
+                for (int i = 0; i < count; i++)
+                {
+                    SimulationRow row = result.Rows[i];
+                    int ry = r.Y + 22 + i * rowH;
+                    bool isCurrent = row.ThresholdMs == _shell.Cfg.ThresholdMs;
+                    Ui.TextLeft(g, row.ThresholdMs + " ms", Ui.Label, isCurrent ? p.Accent1 : p.Muted,
+                        new Rectangle(r.X, ry, 50, rowH));
+                    Ui.TextLeft(g, row.EstimatedFiltered + " 条", Ui.Label, p.Text,
+                        new Rectangle(r.X + 54, ry, 60, rowH));
+                    double pct = row.SharePercent;
+                    Ui.TextLeft(g, pct.ToString("F0") + "%", Ui.Label,
+                        pct > 50 ? p.Warn : p.Muted, new Rectangle(r.X + 118, ry, 40, rowH));
+                    if (!string.IsNullOrEmpty(row.RiskNote))
+                        Ui.TextLeftEllipsis(g, row.RiskNote, Ui.Label, p.Dim,
+                            new Rectangle(r.X + 162, ry, r.Width - 162, rowH));
+                }
+                if (result.RecommendedThresholdMs > 0)
+                {
+                    Ui.TextLeft(g, "推荐：" + result.RecommendedThresholdMs + " ms（样本 " +
+                        hist.Count + "，预测不等于真实误拦截）", Ui.Label, p.Good,
+                        new Rectangle(r.X, r.Bottom - 18, r.Width, 16));
+                }
+            }
+            else
+            {
+                Ui.TextCenter(g, "数据不足——正常使用后此处显示不同阈值的拦截模拟",
+                    Ui.Label, p.Dim, new Rectangle(r.X, r.Y + 30, r.Width, 30));
             }
         }
 

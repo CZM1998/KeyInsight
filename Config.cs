@@ -27,6 +27,8 @@ namespace KeyInsight
         public bool FloatingSummary = false;
         public int FloatingSummaryX = -1;
         public int FloatingSummaryY = -1;
+        // PR-4：更新 rollout 分批 cohort（本地随机 0-99，不上传）
+        public int UpdateCohort = -1;
         public bool SkipInjected = true;
         public bool LogSwallowed = true;
         public bool LogAllKeys = false;
@@ -68,6 +70,7 @@ namespace KeyInsight
             catch
             {
             }
+            if (c.UpdateCohort < 0) c.UpdateCohort = new Random().Next(100);
             return c;
         }
 
@@ -103,6 +106,9 @@ namespace KeyInsight
                     case "floatingsummaryx":
                         if (!legacy && int.TryParse(val, out n)) FloatingSummaryX = n;
                         break;
+                    case "updatecohort":
+                        if (!legacy && int.TryParse(val, out n)) UpdateCohort = Math.Max(0, Math.Min(99, n));
+                        break;
                     case "floatingsummaryy":
                         if (!legacy && int.TryParse(val, out n)) FloatingSummaryY = n;
                         break;
@@ -125,7 +131,7 @@ namespace KeyInsight
                         if (int.TryParse(val, out n)) ThemeMode = Math.Max(0, Math.Min(2, n));
                         break;
                     case "keyboardlayout":
-                        if (int.TryParse(val, out n)) KeyboardLayout = Math.Max(0, Math.Min(3, n));
+                        if (int.TryParse(val, out n)) KeyboardLayout = Math.Max(0, Math.Min(5, n));
                         break;
                     case "autocheckupdates":
                         AutoCheckUpdates = val != "0";
@@ -153,6 +159,7 @@ namespace KeyInsight
                     "FloatingSummary=" + (FloatingSummary ? 1 : 0),
                     "FloatingSummaryX=" + FloatingSummaryX,
                     "FloatingSummaryY=" + FloatingSummaryY,
+                    "UpdateCohort=" + (UpdateCohort >= 0 ? UpdateCohort : new Random().Next(100)),
                     "PolicyMode=" + PolicyMode,
                     "FilterAppWhitelist=" + (FilterAppWhitelist ?? ""),
                     "SkipInjected=" + (SkipInjected ? 1 : 0),

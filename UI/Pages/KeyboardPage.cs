@@ -151,7 +151,7 @@ namespace KeyInsight.UI.Pages
 
         private void DrawLayoutChips(Graphics g, Rectangle card)
         {
-            string[] labels = new string[] { "87 键", "108 键", "87 ISO", "108 ISO" };
+            string[] labels = new string[] { "87", "108", "87 ISO", "108 ISO", "75%", "96%" };
             int total = 0;
             int[] ws = new int[labels.Length];
             for (int i = 0; i < labels.Length; i++)
