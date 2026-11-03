@@ -84,11 +84,13 @@ namespace KeyInsight.UI.Pages
 
         internal void PaintPage(Graphics g)
         {
+
             long t0 = Stopwatch.GetTimestamp();
             Ui.Prep(g);
             if (Snap != null) Draw(g);
             UiMetrics.RecordPaint(GetType().Name.Replace("Page", ""),
                 (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency);
+
         }
 
         internal void DispatchMouseDown(MouseEventArgs e) { OnMouseDown(e); }

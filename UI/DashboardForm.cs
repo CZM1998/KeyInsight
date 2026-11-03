@@ -36,19 +36,20 @@ namespace KeyInsight.UI
         private readonly KeyInsight.Update.Routing.RouteCatalog _routeCatalog;
         private readonly Action _checkUpdates;
         private readonly PageBase[] _pages;
-        // 5 个一级入口（设计 §9 整合）：多页分组用顶部标签切换
-        private readonly string[] _navLabels = new string[] { "总览", "键盘", "鼠标", "分析与诊断", "设置与数据" };
-        private readonly string[] _navGlyphs = new string[] { "\uE80F", "\uE765", "\uE962", "\uE95E", "\uE713" };
+        // 6 个一级入口：总览 / 键盘 / 鼠标 / 设备（Device Center）/ 分析与诊断 / 设置与数据
+        private readonly string[] _navLabels = new string[] { "总览", "键盘", "鼠标", "设备", "分析与诊断", "设置与数据" };
+        private readonly string[] _navGlyphs = new string[] { "\uE80F", "\uE765", "\uE962", "\uE721", "\uE95E", "\uE713" };
         private static readonly int[][] _groupPages = new int[][]
         {
             new int[] { 0 },          // 总览
             new int[] { 1, 6 },       // 键盘热力图 / 防抖统计
             new int[] { 2 },          // 鼠标统计
+            new int[] { 9, 10 },      // 设备中心 / 显示设备（Device Center PR-4/PR-6）
             new int[] { 5, 4, 3 },    // 按键健康 / 时间分析 / 应用统计
             new int[] { 7, 8 }        // 设置 / 高级与设备
         };
-        private readonly int[] _groupActive = new int[] { 0, 1, 2, 5, 7 };
-        private readonly Rectangle[] _navRects = new Rectangle[5];
+        private readonly int[] _groupActive = new int[] { 0, 1, 2, 9, 5, 7 };
+        private readonly Rectangle[] _navRects = new Rectangle[6];
         private Rectangle[] _tabRects = new Rectangle[0];
         private int[] _tabPageIndices = new int[0];
         private int _currentGroup;
@@ -69,6 +70,7 @@ namespace KeyInsight.UI
         private Rectangle _closeRect;
         private readonly Timer _timer;
         private readonly Image _logo;
+        private readonly Services.DeviceCenter.DeviceCenterService _deviceCenter;
         private bool _exiting;
         private StatsEngine _asyncEngine;
         private long _pendingSnapshotGen;
@@ -79,20 +81,20 @@ namespace KeyInsight.UI
         public bool ScreenshotMode;
 
         public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook, Action checkUpdates)
-            : this(source, cfg, hook, mouseHook, checkUpdates, null, null, null, null, null, null)
+            : this(source, cfg, hook, mouseHook, checkUpdates, null, null, null, null, null, null, null)
         {
         }
 
         public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook,
             Action checkUpdates, KeyPolicyStore keyPolicies, RawInputTracker rawInput)
-            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, null, null, null, null)
+            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, null, null, null, null, null)
         {
         }
 
         public DashboardForm(IStatsSource source, Config cfg, DebounceHook hook, MouseHook mouseHook,
             Action checkUpdates, KeyPolicyStore keyPolicies, RawInputTracker rawInput,
             HookSupervisor supervisor, Core.Telemetry.StatsEngineSink sink)
-            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, supervisor, sink, null, null)
+            : this(source, cfg, hook, mouseHook, checkUpdates, keyPolicies, rawInput, supervisor, sink, null, null, null)
         {
         }
 
@@ -100,10 +102,12 @@ namespace KeyInsight.UI
             Action checkUpdates, KeyPolicyStore keyPolicies, RawInputTracker rawInput,
             HookSupervisor supervisor, Core.Telemetry.StatsEngineSink sink,
             KeyInsight.Update.Orchestration.UpdateOrchestrator updater,
-            KeyInsight.Update.Routing.RouteCatalog routeCatalog)
+            KeyInsight.Update.Routing.RouteCatalog routeCatalog,
+            Services.DeviceCenter.DeviceCenterService deviceCenter)
         {
             _source = source;
             _cfg = cfg;
+            _deviceCenter = deviceCenter;
             _hook = hook;
             _mouseHook = mouseHook;
             _checkUpdates = checkUpdates;
@@ -137,7 +141,9 @@ namespace KeyInsight.UI
                 new HealthPage(this),
                 new DebouncePage(this),
                 new SettingsPage(this),
-                new AdvancedPage(this)
+                new AdvancedPage(this),
+                new DeviceCenterPage(this),
+                new DisplayCenterPage(this)
             };
 
             for (int i = 0; i < _pages.Length; i++)
@@ -182,6 +188,7 @@ namespace KeyInsight.UI
         public bool FloatingSummaryOn { get { return _cfg.FloatingSummary; } }
         public KeyInsight.Update.Orchestration.UpdateOrchestrator Updater { get { return _updater; } }
         public KeyInsight.Update.Routing.RouteCatalog RouteCatalog { get { return _routeCatalog; } }
+        public Services.DeviceCenter.DeviceCenterService DeviceCenter { get { return _deviceCenter; } }
 
         public void SetCaptureEnabled(bool on)
         {

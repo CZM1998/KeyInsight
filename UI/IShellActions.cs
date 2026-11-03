@@ -1,5 +1,6 @@
 using KeyInsight.Core.Policy;
 using KeyInsight.Hook;
+using KeyInsight.Services.DeviceCenter;
 using KeyInsight.Stats;
 
 namespace KeyInsight.UI
@@ -16,6 +17,8 @@ namespace KeyInsight.UI
         HookSupervisor Supervisor { get; }
         KeyInsight.Update.Orchestration.UpdateOrchestrator Updater { get; }
         KeyInsight.Update.Routing.RouteCatalog RouteCatalog { get; }
+        /// <summary>设备中心服务（方案 PR-2/PR-4；UI 只消费快照与事件，不做设备查询）。</summary>
+        DeviceCenterService DeviceCenter { get; }
         long TelemetryDropped { get; }
         bool CaptureEnabled { get; }
         bool DiagnosticsEnabled { get; }

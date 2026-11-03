@@ -98,5 +98,15 @@ namespace KeyInsight.Stats
             }
             return Path.Combine(exeDir, "KeyInsight.ini");
         }
+
+        /// <summary>设备中心数据域（方案 §10.1：DeviceCenter 独立目录，不与 KDS 混放）。</summary>
+        public static string ResolveDeviceCenterDir(string exeDir)
+        {
+            if (DetectMode(exeDir) == AppMode.Installed)
+            {
+                return Path.Combine(InstalledRoot, "devicecenter");
+            }
+            return Path.Combine(exeDir, "data", "devicecenter");
+        }
     }
 }

@@ -166,16 +166,23 @@ namespace KeyInsight
                     new KeyInsight.Update.Orchestration.UpdateOrchestrator(
                         routeCatalog, Path.Combine(dataDir, "update-staging"), null);
 
+                // Device Center（综合外设管理平台 PR-2）：独立数据域，KDS 零接触
+                KeyInsight.Services.DeviceCenter.DeviceCenterService deviceCenter =
+                    new KeyInsight.Services.DeviceCenter.DeviceCenterService(
+                        DataPathResolver.ResolveDeviceCenterDir(AppDomain.CurrentDomain.BaseDirectory));
+
                 try
                 {
                     using (TrayContext tray = new TrayContext(cfg, stats, hook, mouseHook,
-                        keyPolicies, rawInput, supervisor, sink, orchestrator, routeCatalog))
+                        keyPolicies, rawInput, supervisor, sink, orchestrator, routeCatalog,
+                        deviceCenter))
                     {
                         Application.Run(tray);
                     }
                 }
                 finally
                 {
+                    try { deviceCenter.Dispose(); } catch { }
                     supervisor.Dispose();
                     hook.Dispose();
                     mouseHook.Dispose();
@@ -214,6 +221,7 @@ namespace KeyInsight
         private readonly StatsEngineSink _sink;
         private readonly KeyInsight.Update.Orchestration.UpdateOrchestrator _updater;
         private readonly KeyInsight.Update.Routing.RouteCatalog _routeCatalog;
+        private readonly KeyInsight.Services.DeviceCenter.DeviceCenterService _deviceCenter;
         private FloatingSummaryForm _floating;
         private readonly NotifyIcon _icon;
         private readonly ToolStripMenuItem _openItem;
@@ -233,7 +241,8 @@ namespace KeyInsight
         public TrayContext(Config cfg, StatsEngine stats, DebounceHook hook, MouseHook mouseHook,
             KeyPolicyStore keyPolicies, RawInputTracker rawInput, HookSupervisor supervisor, StatsEngineSink sink,
             KeyInsight.Update.Orchestration.UpdateOrchestrator updater,
-            KeyInsight.Update.Routing.RouteCatalog routeCatalog)
+            KeyInsight.Update.Routing.RouteCatalog routeCatalog,
+            KeyInsight.Services.DeviceCenter.DeviceCenterService deviceCenter)
         {
             _cfg = cfg;
             _stats = stats;
@@ -245,6 +254,7 @@ namespace KeyInsight
             _sink = sink;
             _updater = updater;
             _routeCatalog = routeCatalog;
+            _deviceCenter = deviceCenter;
             _sync = SynchronizationContext.Current;
 
             ContextMenuStrip menu = new ContextMenuStrip();
@@ -325,6 +335,7 @@ namespace KeyInsight
 
             menu.Opening += delegate { UpdateMenu(); };
 
+            try { _deviceCenter.Start(); } catch { }
             _icon = new NotifyIcon();
             _icon.Icon = LoadIcon();
             _icon.ContextMenuStrip = menu;
@@ -373,8 +384,8 @@ namespace KeyInsight
             if (_form == null || _form.IsDisposed)
             {
                 _form = new DashboardForm(_stats, _cfg, _hook, _mouseHook,
-                    delegate { BeginUpdateCheck(true); }, _keyPolicies, _rawInput, _supervisor, _sink,
-                    _updater, _routeCatalog);
+                    delegate { BeginUpdateCheck(true); }, _keyPolicies, _rawInput, _supervisor,
+                    _sink, _updater, _routeCatalog, _deviceCenter);
             }
             _form.Show();
             if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;

@@ -19,7 +19,8 @@ namespace KeyInsight.Perf
     {
         private static readonly string[] Names = new string[]
         {
-            "overview", "keyboard", "mouse", "apps", "time", "health", "debounce", "settings", "advanced"
+            "overview", "keyboard", "mouse", "apps", "time", "health", "debounce", "settings",
+            "advanced", "devicecenter", "displaycenter"
         };
 
         private static readonly Size[] Sizes = new Size[]
@@ -124,6 +125,9 @@ namespace KeyInsight.Perf
 
         private static void Save(DashboardForm form, string path)
         {
+            // 绘制中抛出的异常会让 DrawToBitmap 的 WM_PRINT 永不完成（表现为此处卡死），
+            // 修掉根因（导航数组 6 组越界）后恢复 DrawToBitmap；窗口保持离屏。
+            Application.DoEvents();
             using (Bitmap bmp = new Bitmap(form.Width, form.Height))
             {
                 form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));

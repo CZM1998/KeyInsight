@@ -128,6 +128,7 @@ namespace KeyInsight.Tests
             KeyInsight.Tests.Storage.KdsCompatibilityTests.Register();
             KeyInsight.Tests.Storage.CsvSnapshotTests.Register();
             KeyInsight.Tests.Storage.SidecarAndMigrationTests.Register();
+            KeyInsight.Tests.Storage.DeviceCenterTests.Register();
         }
     }
 }

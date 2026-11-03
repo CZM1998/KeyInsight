@@ -27,6 +27,8 @@ $files += Join-Path $root 'Config.cs'
 $files += Join-Path $root 'ConfigV2.cs'
 # Update pipeline (route catalog / manifest / downloader) is logic-testable without UI
 $files += Get-ChildItem -Path (Join-Path $root 'Update') -Recurse -Filter *.cs | ForEach-Object { $_.FullName }
+$files += Get-ChildItem -Path (Join-Path $root 'Storage') -Recurse -Filter *.cs | ForEach-Object { $_.FullName }
+$files += Get-ChildItem -Path (Join-Path $root 'Adapters') -Recurse -Filter *.cs | ForEach-Object { $_.FullName }
 # KeyLayout is a pure mapping table (no WinForms); stats projections use it for labels
 $files += Join-Path $root 'UI\KeyLayout.cs'
 $files += Get-ChildItem -Path (Join-Path $root 'Tests') -Recurse -Filter *.cs | ForEach-Object { $_.FullName }

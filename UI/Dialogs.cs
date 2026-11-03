@@ -29,6 +29,11 @@ namespace KeyInsight.UI
             return Run(owner, title, message, true);
         }
 
+        public static void Info(IWin32Window owner, string title, string message)
+        {
+            Show(owner, title, message);
+        }
+
         public static void Error(IWin32Window owner, string title, string message)
         {
             DialogForm f = new DialogForm(title, message, false, true);
