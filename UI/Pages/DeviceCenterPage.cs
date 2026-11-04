@@ -20,6 +20,7 @@ namespace KeyInsight.UI.Pages
         private Rectangle[] _filterRects = new Rectangle[0];
         private readonly List<DeviceRow> _rows = new List<DeviceRow>();
         private Rectangle _refreshRect;
+        private Rectangle _exportRect;
 
         private sealed class DeviceRow
         {
@@ -67,7 +68,9 @@ namespace KeyInsight.UI.Pages
 
             // 分类过滤 chips + 手动刷新
             DrawFilterChips(g, 0, y, p);
+            _exportRect = new Rectangle(ContentW - 196, y - 4, 96, 26);
             _refreshRect = new Rectangle(ContentW - 92, y - 4, 92, 26);
+            Charts.Button(g, _exportRect, "导出清单", false, p);
             Charts.Button(g, _refreshRect, "重新扫描", false, p);
             y += 40;
 
@@ -179,6 +182,26 @@ namespace KeyInsight.UI.Pages
             }
         }
 
+        private void ExportInventory()
+        {
+            DeviceCenterService svc = _shell.DeviceCenter;
+            if (svc == null) return;
+            try
+            {
+                string dataDir = System.IO.Path.GetDirectoryName(svc.Store.FilePath);
+                string csv = KeyInsight.Services.DeviceCenter.DeviceAnalytics.BuildCsv(
+                    svc.Records(), DateTime.UtcNow);
+                string path = KeyInsight.Services.DeviceCenter.DeviceAnalytics.WriteExport(dataDir,
+                    "inventory-" + DateTime.Now.ToString("yyyyMMdd-HHmm") + ".csv", csv);
+                Dialogs.Info(null, "清单已导出",
+                    "共 " + svc.Records().Count + " 台设备（序列号已脱敏）。\n已写入：" + path);
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Error(null, "导出失败", ex.Message);
+            }
+        }
+
         private static LifecyclePhase PhaseOf(DeviceRecord r)
         {
             switch (r.Connection)
@@ -269,6 +292,11 @@ namespace KeyInsight.UI.Pages
             {
                 DeviceCenterService svc = _shell.DeviceCenter;
                 if (svc != null) svc.RefreshNow();
+                return;
+            }
+            if (_exportRect.Contains(pt))
+            {
+                ExportInventory();
                 return;
             }
             for (int i = 0; i < _filterRects.Length; i++)

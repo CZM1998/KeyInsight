@@ -20,7 +20,7 @@ namespace KeyInsight.Perf
         private static readonly string[] Names = new string[]
         {
             "overview", "keyboard", "mouse", "apps", "time", "health", "debounce", "settings",
-            "advanced", "devicecenter", "displaycenter"
+            "advanced", "devicecenter", "displaycenter", "usb"
         };
 
         private static readonly Size[] Sizes = new Size[]

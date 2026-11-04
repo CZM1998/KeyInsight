@@ -44,7 +44,7 @@ namespace KeyInsight.UI
             new int[] { 0 },          // 总览
             new int[] { 1, 6 },       // 键盘热力图 / 防抖统计
             new int[] { 2 },          // 鼠标统计
-            new int[] { 9, 10 },      // 设备中心 / 显示设备（Device Center PR-4/PR-6）
+            new int[] { 9, 10, 11 },  // 设备中心 / 显示设备 / USB与扩展（PR-4/6/9）
             new int[] { 5, 4, 3 },    // 按键健康 / 时间分析 / 应用统计
             new int[] { 7, 8 }        // 设置 / 高级与设备
         };
@@ -143,7 +143,8 @@ namespace KeyInsight.UI
                 new SettingsPage(this),
                 new AdvancedPage(this),
                 new DeviceCenterPage(this),
-                new DisplayCenterPage(this)
+                new DisplayCenterPage(this),
+                new UsbPage(this)
             };
 
             for (int i = 0; i < _pages.Length; i++)

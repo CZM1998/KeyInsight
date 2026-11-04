@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using KeyInsight.Adapters.Display;
 using KeyInsight.Adapters.Pnp;
@@ -33,6 +34,10 @@ namespace KeyInsight.Services.DeviceCenter
         private long _lastRefreshTicks;
         private bool _dirty;                      // 合并后有待刷新事件
         private bool _disposed;
+        private string _lastDefaultRender;        // 默认播放端点（§9.1 默认设备变化事件）
+        private string _lastDefaultCapture;       // 默认录音端点
+        private readonly KeyInsight.Adapters.Audio.AudioAdapter _audio =
+            new KeyInsight.Adapters.Audio.AudioAdapter();
 
         /// <summary>设备数据变化（已在后台线程触发；UI 需自行 Post）。</summary>
         public event Action Changed;
@@ -228,7 +233,85 @@ namespace KeyInsight.Services.DeviceCenter
             List<DeviceSnapshot> snapshots = new List<DeviceSnapshot>();
             try { snapshots.AddRange(_display.Enumerate()); } catch { }
             try { snapshots.AddRange(_pnp.Enumerate()); } catch { }
+            try { snapshots.AddRange(_audio.EnumerateSnapshots()); } catch { }
+            try { snapshots.AddRange(KeyInsight.Adapters.Input.XInputAdapter.Enumerate()); } catch { }
+            try { EnrichPrinters(snapshots); } catch { }
             ApplySnapshots(snapshots);
+            TrackDefaultAudioEndpoints();
+        }
+
+        /// <summary>把 winspool 状态合并进 PnP 打印机快照（按名称匹配，方案 §9.4）。</summary>
+        private static void EnrichPrinters(List<DeviceSnapshot> snapshots)
+        {
+            List<KeyInsight.Adapters.Office.PrinterAdapter.PrinterStatus> printers =
+                KeyInsight.Adapters.Office.PrinterAdapter.Enumerate();
+            if (printers.Count == 0) return;
+            for (int i = 0; i < snapshots.Count; i++)
+            {
+                DeviceSnapshot s = snapshots[i];
+                if (s.Category != DeviceCategory.Office || s.DeviceClass != "PRINTER") continue;
+                for (int k = 0; k < printers.Count; k++)
+                {
+                    KeyInsight.Adapters.Office.PrinterAdapter.PrinterStatus ps = printers[k];
+                    if (!NameMatches(s.Name, ps.Name) && !NameMatches(s.Model, ps.Name)) continue;
+                    StringBuilder sb = new StringBuilder(s.AttributesJson ?? "{}");
+                    if (sb[sb.Length - 1] == '}') sb.Length -= 1;
+                    if (sb[sb.Length - 1] != '{') sb.Append(',');
+                    sb.Append("\"printerStatus\":\"").Append(
+                        KeyInsight.Adapters.Office.PrinterAdapter.StatusText(ps.StatusFlags)
+                            .Replace("\\", "\\\\").Replace("\"", "'"))
+                      .Append("\",\"printerJobs\":").Append(ps.Jobs)
+                      .Append('}');
+                    s.AttributesJson = sb.ToString();
+                    break;
+                }
+            }
+        }
+
+        private static bool NameMatches(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            return a.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0
+                || b.IndexOf(a, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>默认音频端点变化 → 事件（方案 §9.1/§10.3，不采集音频内容）。</summary>
+        private void TrackDefaultAudioEndpoints()
+        {
+            try
+            {
+                KeyInsight.Adapters.Audio.AudioAdapter.AudioResult r = _audio.Enumerate();
+                bool changed = false;
+                if (!string.Equals(r.DefaultRenderId, _lastDefaultRender, StringComparison.OrdinalIgnoreCase)
+                    && _lastDefaultRender != null)
+                {
+                    changed = true;
+                }
+                if (!string.Equals(r.DefaultCaptureId, _lastDefaultCapture, StringComparison.OrdinalIgnoreCase)
+                    && _lastDefaultCapture != null)
+                {
+                    changed = true;
+                }
+                if (_lastDefaultRender == null && _lastDefaultCapture == null)
+                {
+                    changed = false;    // 首轮只记录基线
+                }
+                _lastDefaultRender = r.DefaultRenderId;
+                _lastDefaultCapture = r.DefaultCaptureId;
+                if (changed)
+                {
+                    DeviceEventItem e = new DeviceEventItem();
+                    e.EventType = DeviceEventType.DefaultEndpointChanged;
+                    e.Category = DeviceCategory.Audio;
+                    e.TimeUtc = DateTime.UtcNow;
+                    e.EvidenceJson = "{\"renderChanged\":" + "1}";
+                    _events.Append(e);
+                    RaiseChanged();
+                }
+            }
+            catch
+            {
+            }
         }
 
         internal void ApplySnapshots(List<DeviceSnapshot> snapshots)

@@ -135,6 +135,18 @@ namespace KeyInsight.UI
             y += 50;
 
             title = new Label();
+            title.Text = Section("使用分析（估算）");
+            title.SetBounds(x, y, w, 22);
+            Controls.Add(title);
+            y += 26;
+            Label usage = new Label();
+            usage.Text = UsageText();
+            usage.ForeColor = Theme.P.Text;
+            usage.SetBounds(x, y, w, 52);
+            Controls.Add(usage);
+            y += 60;
+
+            title = new Label();
             title.Text = Section("历史 Finding");
             title.SetBounds(x, y, w, 22);
             Controls.Add(title);
@@ -153,6 +165,11 @@ namespace KeyInsight.UI
                 Controls.Add(test);
                 y += 40;
             }
+
+            Button export = MakeButton("导出报告（脱敏）", x, y, 150);
+            export.Click += delegate { ExportReport(); };
+            Controls.Add(export);
+            y += 40;
 
             _archive = MakeButton("归档此设备", x, y, 110);
             _archive.Click += delegate { ArchiveDevice(); };
@@ -274,6 +291,58 @@ namespace KeyInsight.UI
                 case FindingStatus.Resolved: return "已解决";
                 case FindingStatus.Dismissed: return "已忽略";
                 default: return "候选";
+            }
+        }
+
+        private string UsageText()
+        {
+            if (_shell.DeviceCenter == null) return "暂无";
+            List<DeviceEventItem> all = _shell.DeviceCenter.RecentEvents(600);
+            List<DeviceEventItem> mine = new List<DeviceEventItem>();
+            for (int i = 0; i < all.Count; i++)
+            {
+                if (string.Equals(all[i].DeviceId, _record.DeviceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    mine.Add(all[i]);
+                }
+            }
+            KeyInsight.Services.DeviceCenter.DeviceAnalytics.UsageSummary usage =
+                KeyInsight.Services.DeviceCenter.DeviceAnalytics.Summarize(mine, DateTime.UtcNow);
+            return "插入 " + usage.ConnectCount + " 次 · 拔出 " + usage.DisconnectCount
+                + " 次\n累计连接时长（估算）："
+                + KeyInsight.Services.DeviceCenter.DeviceAnalytics.FormatDuration(usage.TotalConnected)
+                + "\n最近连接：" + (usage.LastConnectedUtc.HasValue
+                    ? usage.LastConnectedUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "无记录");
+        }
+
+        private void ExportReport()
+        {
+            if (_shell.DeviceCenter == null) return;
+            try
+            {
+                string dataDir = System.IO.Path.GetDirectoryName(
+                    _shell.DeviceCenter.Store.FilePath);
+                List<DeviceEventItem> all = _shell.DeviceCenter.RecentEvents(600);
+                List<DeviceEventItem> mine = new List<DeviceEventItem>();
+                for (int i = 0; i < all.Count; i++)
+                {
+                    if (string.Equals(all[i].DeviceId, _record.DeviceId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        mine.Add(all[i]);
+                    }
+                }
+                string md = KeyInsight.Services.DeviceCenter.DeviceAnalytics.BuildDeviceMarkdown(
+                    _record,
+                    KeyInsight.Services.DeviceCenter.DeviceAnalytics.Summarize(mine, DateTime.UtcNow),
+                    _shell.DeviceCenter.Diagnostics.FindingsForDevice(_record.DeviceId),
+                    mine, DateTime.UtcNow);
+                string path = KeyInsight.Services.DeviceCenter.DeviceAnalytics.WriteExport(dataDir,
+                    "device-" + _record.DeviceId.Substring(0, 8) + ".md", md);
+                Dialogs.Info(this, "报告已导出", "已写入：" + path);
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Error(this, "导出失败", ex.Message);
             }
         }
 

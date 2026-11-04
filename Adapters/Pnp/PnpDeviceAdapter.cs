@@ -96,7 +96,7 @@ namespace KeyInsight.Adapters.Pnp
                         catch { }
                     }
 
-                    s.AttributesJson = BuildAttributes(instanceId, s.ContainerId);
+                    s.AttributesJson = BuildAttributes(instanceId, s.ContainerId, s.ParentKey);
                     result.Add(s);
                 }
             }
@@ -170,15 +170,20 @@ namespace KeyInsight.Adapters.Pnp
             return upper.Substring(vid, Math.Min(9, end - vid)).TrimEnd('&', '\\', ':');
         }
 
-        private static string BuildAttributes(string instanceId, string containerId)
+        private static string BuildAttributes(string instanceId, string containerId, string parentKey)
         {
-            StringBuilder sb = new StringBuilder(160);
+            StringBuilder sb = new StringBuilder(220);
             sb.Append('{');
             string vp = ParseVidPid(instanceId);
             if (!string.IsNullOrEmpty(vp)) sb.Append("\"vidPid\":\"").Append(vp).Append("\",");
             if (!string.IsNullOrEmpty(containerId))
             {
                 sb.Append("\"containerId\":\"").Append(containerId).Append("\",");
+            }
+            if (!string.IsNullOrEmpty(parentKey))
+            {
+                sb.Append("\"parentKey\":\"").Append(
+                    parentKey.Replace("\\", "\\\\").Replace("\"", "'")).Append("\",");
             }
             sb.Append("\"instancePath\":\"").Append(
                 (instanceId ?? "").Replace("\\", "\\\\").Replace("\"", "'")).Append('"');
