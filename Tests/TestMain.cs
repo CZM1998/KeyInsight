@@ -131,6 +131,7 @@ namespace KeyInsight.Tests
             KeyInsight.Tests.Storage.DeviceCenterTests.Register();
             KeyInsight.Tests.Storage.DeviceAnalyticsTests.Register();
             KeyInsight.Tests.Storage.DeviceExtTests.Register();
+            KeyInsight.Tests.Storage.RawInputTests.Register();
         }
     }
 }

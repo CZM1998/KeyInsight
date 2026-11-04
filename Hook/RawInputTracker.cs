@@ -27,11 +27,11 @@ namespace KeyInsight.Hook
         private const ushort HID_USAGE_GENERIC_KEYBOARD = 0x06;
         private const ushort HID_USAGE_GENERIC_MOUSE = 0x02;
 
-        [DllImport("user32.dll", SetLastError = true)]
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr CreateWindowEx(uint exStyle, string className, string windowName,
             uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
 
-        [DllImport("user32.dll", SetLastError = true)]
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern ushort RegisterClass(ref WNDCLASS wc);
 
         [DllImport("user32.dll", SetLastError = true)]
@@ -61,7 +61,7 @@ namespace KeyInsight.Hook
         [DllImport("user32.dll")]
         private static extern uint GetRawInputData(IntPtr hRawInput, uint command, IntPtr data, ref uint size, uint headerSize);
 
-        [DllImport("user32.dll", SetLastError = true)]
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetRawInputDeviceInfo(IntPtr device, uint command, IntPtr data, ref uint size);
 
         private delegate IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -127,6 +127,12 @@ namespace KeyInsight.Hook
 
         public bool IsRunning { get { return _running && _hwnd != IntPtr.Zero; } }
 
+        /// <summary>最近一次启动失败原因（诊断用；空 = 最近一次启动成功）。</summary>
+        public string LastStartError = "";
+
+        // 节流持久化：事件持续到达时每 10s 落盘一次（原先仅退出时保存，崩溃会丢累计）
+        private long _lastSaveTicks;
+
         public bool Start()
         {
             if (_running) return true;
@@ -150,13 +156,23 @@ namespace KeyInsight.Hook
                 wc.lpfnWndProc = _wndProc;
                 wc.hInstance = GetModuleHandle(null);
                 wc.lpszClassName = cls;
-                RegisterClass(ref wc);
+                if (RegisterClass(ref wc) == 0)
+                {
+                    int clsErr = Marshal.GetLastWin32Error();
+                    if (clsErr != 1410)   // ERROR_CLASS_ALREADY_EXISTS 可忽略
+                    {
+                        LastStartError = "RegisterClass err=" + clsErr;
+                        _running = false;
+                        return;
+                    }
+                }
 
                 // HWND_MESSAGE (-3) 的 message-only 窗口
                 _hwnd = CreateWindowEx(0, cls, "KeyInsightRawInput", 0, 0, 0, 0, 0,
                     new IntPtr(-3), IntPtr.Zero, wc.hInstance, IntPtr.Zero);
                 if (_hwnd == IntPtr.Zero)
                 {
+                    LastStartError = "CreateWindowEx err=" + Marshal.GetLastWin32Error();
                     _running = false;
                     return;
                 }
@@ -172,6 +188,8 @@ namespace KeyInsight.Hook
                 devices[1].hwndTarget = _hwnd;
                 if (!RegisterRawInputDevices(devices, 2, (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE))))
                 {
+                    int regErr = Marshal.GetLastWin32Error();
+                    LastStartError = "RegisterRawInputDevices err=" + regErr;
                     // 注册失败：功能降级，不影响键盘钩子
                     DestroyWindow(_hwnd);
                     _hwnd = IntPtr.Zero;
@@ -179,6 +197,7 @@ namespace KeyInsight.Hook
                     return;
                 }
 
+                LastStartError = "";
                 MSG msg;
                 while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
                 {
@@ -249,6 +268,14 @@ namespace KeyInsight.Hook
                     {
                         try { DeviceSetChanged(); } catch { }
                     }
+                }
+
+                long now = DateTime.UtcNow.Ticks;
+                long last = System.Threading.Interlocked.Read(ref _lastSaveTicks);
+                if ((now - last) / TimeSpan.TicksPerSecond >= 10)
+                {
+                    System.Threading.Interlocked.Exchange(ref _lastSaveTicks, now);
+                    SaveDeviceStats();
                 }
             }
             finally
