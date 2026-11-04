@@ -141,8 +141,8 @@ namespace KeyInsight.UI
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(1200, 780);
-            MinimumSize = new Size(1000, 680);
+            ClientSize = new Size(Ui.Px(1200), Ui.Px(780));
+            MinimumSize = new Size(Ui.Px(1000), Ui.Px(680));
             BackColor = Theme.P.Bg;
             DoubleBuffered = true;
             Text = "KeyInsight";
@@ -404,7 +404,7 @@ namespace KeyInsight.UI
             PageBase page = _pages[_current];
             StatsSnapshot snapshot = _source.GetSnapshot(page.RangeStart, page.RangeEnd);
             page.SetSnapshot(snapshot);
-            Invalidate(new Rectangle(0, 0, Width, TitleHeight));
+            Invalidate();
         }
 
         /// <summary>设置当前页滚动位置（截图回归/测试用）。</summary>
@@ -545,21 +545,25 @@ namespace KeyInsight.UI
             LayoutPages();
         }
 
+        private int DesignW { get { return (int)Math.Round(ClientSize.Width / Ui.Scale); } }
+        private int DesignH { get { return (int)Math.Round(ClientSize.Height / Ui.Scale); } }
+
         private void LayoutPages()
         {
             if (_pages == null) return;
             int tabsH = TabsVisible ? 36 : 0;
             Rectangle content = new Rectangle(
-                SidebarWidth + ContentPad,
-                TitleHeight + 18 + tabsH,
-                ClientSize.Width - SidebarWidth - ContentPad * 2 - ScrollStrip,
-                ClientSize.Height - TitleHeight - 18 - 18 - tabsH);
+                Ui.Px(SidebarWidth + ContentPad),
+                Ui.Px(TitleHeight + 18 + tabsH),
+                ClientSize.Width - Ui.Px(SidebarWidth + ContentPad * 2 + ScrollStrip),
+                ClientSize.Height - Ui.Px(TitleHeight + 18 + 18 + tabsH));
             for (int i = 0; i < _pages.Length; i++) _pages[i].Bounds = content;
 
-            _minRect = new Rectangle(ClientSize.Width - 140, 13, 40, 32);
-            _maxRect = new Rectangle(ClientSize.Width - 96, 13, 40, 32);
-            _closeRect = new Rectangle(ClientSize.Width - 52, 13, 40, 32);
-            _statusRect = new Rectangle(ClientSize.Width - 148 - 168, 15, 168, 28);
+            // 命中区域用设计坐标（输入坐标会先换算到设计空间）
+            _minRect = new Rectangle(DesignW - 140, 13, 40, 32);
+            _maxRect = new Rectangle(DesignW - 96, 13, 40, 32);
+            _closeRect = new Rectangle(DesignW - 52, 13, 40, 32);
+            _statusRect = new Rectangle(DesignW - 148 - 168, 15, 168, 28);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -575,13 +579,18 @@ namespace KeyInsight.UI
 
             g.Clear(p.Bg);
 
-            Rectangle title = new Rectangle(0, 0, ClientSize.Width, TitleHeight);
-            using (SolidBrush b = new SolidBrush(p.TitleBar)) g.FillRectangle(b, title);
-            using (Pen pen = new Pen(p.Border, 1f)) g.DrawLine(pen, 0, TitleHeight - 1, ClientSize.Width, TitleHeight - 1);
+            GraphicsState shellState = g.Save();
+            if (Ui.Scale != 1f) g.ScaleTransform(Ui.Scale, Ui.Scale);
+            int designW = DesignW;
+            int designH = DesignH;
 
-            Rectangle side = new Rectangle(0, TitleHeight, SidebarWidth, ClientSize.Height - TitleHeight);
+            Rectangle title = new Rectangle(0, 0, designW, TitleHeight);
+            using (SolidBrush b = new SolidBrush(p.TitleBar)) g.FillRectangle(b, title);
+            using (Pen pen = new Pen(p.Border, 1f)) g.DrawLine(pen, 0, TitleHeight - 1, designW, TitleHeight - 1);
+
+            Rectangle side = new Rectangle(0, TitleHeight, SidebarWidth, designH - TitleHeight);
             using (SolidBrush b = new SolidBrush(p.Sidebar)) g.FillRectangle(b, side);
-            using (Pen pen = new Pen(p.Border, 1f)) g.DrawLine(pen, SidebarWidth - 1, TitleHeight, SidebarWidth - 1, ClientSize.Height);
+            using (Pen pen = new Pen(p.Border, 1f)) g.DrawLine(pen, SidebarWidth - 1, TitleHeight, SidebarWidth - 1, designH);
 
             Ui.TextLeft(g, "KeyInsight", Ui.BrandTitle, p.Text,
                 new Rectangle(58, LogoBaseY, 220, LogoSize));
@@ -594,8 +603,10 @@ namespace KeyInsight.UI
             // Logo 最后画：掉落时会在侧栏导航之上，不会被导航高亮盖住
             DrawLogo(g);
 
-            Ui.TextLeft(g, "v" + AppInfo.Version, Ui.Label, p.Dim, new Rectangle(18, ClientSize.Height - 22, 80, 18));
+            Ui.TextLeft(g, "v" + AppInfo.Version, Ui.Label, p.Dim, new Rectangle(18, designH - 22, 80, 18));
+            g.Restore(shellState);
 
+            // 边框与缩放手柄按物理像素绘制，避免缩放后出现半像素缝隙
             using (Pen pen = new Pen(p.BorderStrong, 1f))
             {
                 g.DrawRectangle(pen, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
@@ -607,9 +618,9 @@ namespace KeyInsight.UI
                 {
                     for (int i = 0; i < 3; i++)
                     {
-                        int off = 7 + i * 4;
-                        g.DrawLine(grip, ClientSize.Width - off, ClientSize.Height - 4,
-                            ClientSize.Width - 4, ClientSize.Height - off);
+                        int off = Ui.Px(7 + i * 4);
+                        g.DrawLine(grip, ClientSize.Width - off, ClientSize.Height - Ui.Px(4),
+                            ClientSize.Width - Ui.Px(4), ClientSize.Height - off);
                     }
                 }
             }
@@ -633,7 +644,7 @@ namespace KeyInsight.UI
             PageBase page = (_current >= 0 && _current < _pages.Length) ? _pages[_current] : null;
             if (page == null) { _scrollTrack = Rectangle.Empty; _scrollThumb = Rectangle.Empty; return; }
 
-            Rectangle content = page.Bounds;
+            Rectangle content = Ui.ToDesign(page.Bounds);
             int max = page.ScrollMax;
             if (max <= 0)
             {
@@ -644,7 +655,7 @@ namespace KeyInsight.UI
 
             _scrollTrack = new Rectangle(content.Right + 4, content.Y + 6, 6, content.Height - 12);
             int trackH = _scrollTrack.Height;
-            int viewport = Math.Max(1, page.ClientSize.Height);
+            int viewport = Math.Max(1, (int)Math.Round(page.ClientSize.Height / Ui.Scale));
             int contentH = viewport + max;
             int thumbH = Math.Max(42, (int)(trackH * (viewport / (double)contentH)));
             int scrollRange = Math.Max(1, trackH - thumbH);
@@ -830,13 +841,14 @@ namespace KeyInsight.UI
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            if (UpdateScrollBarDrag(e.Location, (e.Button & MouseButtons.Left) != 0)) return;
+            Point pt = Ui.ToDesign(e.Location);
+            if (UpdateScrollBarDrag(pt, (e.Button & MouseButtons.Left) != 0)) return;
             int nav = -1;
-            for (int i = 0; i < _navRects.Length; i++) if (_navRects[i].Contains(e.Location)) { nav = i; break; }
-            bool min = _minRect.Contains(e.Location);
-            bool max = _maxRect.Contains(e.Location);
-            bool close = _closeRect.Contains(e.Location);
-            bool status = _statusRect.Contains(e.Location);
+            for (int i = 0; i < _navRects.Length; i++) if (_navRects[i].Contains(pt)) { nav = i; break; }
+            bool min = _minRect.Contains(pt);
+            bool max = _maxRect.Contains(pt);
+            bool close = _closeRect.Contains(pt);
+            bool status = _statusRect.Contains(pt);
             if (nav != _hoverNav || min != _hoverMin || max != _hoverMax ||
                 close != _hoverClose || status != _hoverStatus)
             {
@@ -864,58 +876,59 @@ namespace KeyInsight.UI
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
+            Point pt = Ui.ToDesign(e.Location);
 
             // Logo 区域先吃掉点击：连点 5 次触发掉落彩蛋，同时避免被当成标题栏拖动
-            if (new Rectangle(LogoBaseX - 4, LogoBaseY - 4, LogoSize + 8, LogoSize + 8).Contains(e.Location))
+            if (new Rectangle(LogoBaseX - 4, LogoBaseY - 4, LogoSize + 8, LogoSize + 8).Contains(pt))
             {
                 RegisterLogoTap();
                 return;
             }
 
-            if (ScrollBarHit(e.Location)) return;
+            if (ScrollBarHit(pt)) return;
 
-            if (_closeRect.Contains(e.Location))
+            if (_closeRect.Contains(pt))
             {
                 Hide();
                 return;
             }
-            if (_maxRect.Contains(e.Location))
+            if (_maxRect.Contains(pt))
             {
                 ToggleMaximize();
                 return;
             }
-            if (_minRect.Contains(e.Location))
+            if (_minRect.Contains(pt))
             {
                 WindowState = FormWindowState.Minimized;
                 return;
             }
-            if (_statusRect.Contains(e.Location))
+            if (_statusRect.Contains(pt))
             {
                 SelectPage(6);
                 return;
             }
 
-            if (e.Clicks == 2 && e.Y < TitleHeight)
+            if (e.Clicks == 2 && pt.Y < TitleHeight)
             {
                 ToggleMaximize();
                 return;
             }
             for (int i = 0; i < _navRects.Length; i++)
             {
-                if (_navRects[i].Contains(e.Location))
+                if (_navRects[i].Contains(pt))
                 {
                     SelectGroup(i);
                     return;
                 }
             }
-            int tab = HitTabs(e.Location);
+            int tab = HitTabs(pt);
             if (tab >= 0)
             {
                 SelectPage(_tabPageIndices[tab]);
                 return;
             }
 
-            if (e.Y < TitleHeight)
+            if (pt.Y < TitleHeight)
             {
                 ReleaseCapture();
                 SendMessage(Handle, 0x00A1, (IntPtr)2, IntPtr.Zero);
@@ -930,7 +943,7 @@ namespace KeyInsight.UI
                 int sx = (short)(lp & 0xFFFF);
                 int sy = (short)((lp >> 16) & 0xFFFF);
                 Point pt = PointToClient(new Point(sx, sy));
-                int edge = 6;
+                int edge = Ui.Px(6);
                 bool left = pt.X <= edge;
                 bool right = pt.X >= ClientSize.Width - edge;
                 bool top = pt.Y <= edge;
@@ -976,7 +989,7 @@ namespace KeyInsight.UI
 
         private int LogoFloorY
         {
-            get { return Math.Max(LogoBaseY, ClientSize.Height - LogoSize - 34); }
+            get { return Math.Max(LogoBaseY, DesignH - LogoSize - 34); }
         }
 
         private void DrawLogo(Graphics g)
@@ -1014,7 +1027,7 @@ namespace KeyInsight.UI
         private void InvalidateLogo()
         {
             // 只在标题栏 + 侧栏范围内重绘：Logo 的活动范围被限制在这一列
-            Invalidate(new Rectangle(0, 0, SidebarWidth + 2, ClientSize.Height));
+            Invalidate(Ui.PxRect(new Rectangle(0, 0, SidebarWidth + 2, DesignH)));
         }
 
         private void ResetLogoAnim()

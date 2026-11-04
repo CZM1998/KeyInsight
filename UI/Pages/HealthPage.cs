@@ -318,8 +318,10 @@ namespace KeyInsight.UI.Pages
             Ui.FillRound(g, r, 10, p.CardAlt);
             Ui.StrokeRound(g, r, 10, p.Border);
             Ui.FillRound(g, new RectangleF(r.X + 14, r.Y + 14, 3, 16), 1.5f, accent);
-            Ui.TextLeft(g, label, Ui.Label, p.Muted, new Rectangle(r.X + 24, r.Y + 8, r.Width - 34, 18));
-            Ui.TextLeft(g, value, Ui.CardValueSmall, p.Text, new Rectangle(r.X + 24, r.Y + 21, r.Width - 34, 28));
+            Ui.TextLeftFit(g, label, Ui.Label, p.Muted, new Rectangle(r.X + 24, r.Y + 8, r.Width - 34, 18));
+            int avail = Math.Max(20, r.Width - 34);
+            Ui.TextLeftFit(g, value, Charts.FitValueFont(g, value, avail, 28), p.Text,
+                new Rectangle(r.X + 24, r.Y + 21, avail, 28));
         }
 
         private static void DrawScoreRing(Graphics g, Rectangle r, int score, Color color, Palette p)

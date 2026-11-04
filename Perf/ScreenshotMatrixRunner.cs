@@ -34,7 +34,7 @@ namespace KeyInsight.Perf
         public static void RunAll(DashboardForm form, Config cfg, string outDir, StringBuilder log)
         {
             // 1) 兼容旧 README 的根目录截图（1200×780，深/浅各一套）
-            form.Size = new Size(1200, 780);
+            form.Size = new Size(Ui.Px(1200), Ui.Px(780));
             Application.DoEvents();
             for (int pass = 0; pass < 2; pass++)
             {
@@ -90,7 +90,7 @@ namespace KeyInsight.Perf
             Theme.Refresh();
             form.ApplyTheme();
             form.SelectPage(0);
-            form.Size = new Size(1200, 780);
+            form.Size = new Size(Ui.Px(1200), Ui.Px(780));
             Application.DoEvents();
             SendLogoClicks(form, 5);
             Pump(230);
@@ -127,7 +127,7 @@ namespace KeyInsight.Perf
             // 3) 尺寸 × 主题 × 页面矩阵
             foreach (Size size in Sizes)
             {
-                form.Size = size;
+                form.Size = new Size(Ui.Px(size.Width), Ui.Px(size.Height));
                 Application.DoEvents();
                 for (int pass = 0; pass < 2; pass++)
                 {
@@ -148,7 +148,7 @@ namespace KeyInsight.Perf
             }
 
             // 4) 最小窗口 + 滚动状态（文字与图形必须一起滚动）
-            form.Size = new Size(1000, 680);
+            form.Size = new Size(Ui.Px(1000), Ui.Px(680));
             Application.DoEvents();
             Theme.ForceDark = true;
             Theme.Refresh();
@@ -201,7 +201,7 @@ namespace KeyInsight.Perf
         /// <summary>向标题栏 Logo 发送真实鼠标按下/抬起消息，走 OnMouseDown 的彩蛋计数。</summary>
         private static void SendLogoClicks(Form form, int count)
         {
-            IntPtr lp = (IntPtr)((29 << 16) | 33);   // 客户端坐标 (33,29)：Logo 中心
+            IntPtr lp = (IntPtr)((Ui.Px(29) << 16) | Ui.Px(33));   // 客户端坐标：Logo 中心
             for (int i = 0; i < count; i++)
             {
                 SendMessage(form.Handle, 0x0201, (IntPtr)1, lp);   // WM_LBUTTONDOWN

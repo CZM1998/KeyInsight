@@ -52,8 +52,8 @@ namespace KeyInsight.UI.Pages
 
             int y = 64;
             int gap = 14;
-            int leftW = (Width - gap) / 2;
-            int rightW = Width - leftW - gap;
+            int leftW = (ContentW - gap) / 2;
+            int rightW = ContentW - leftW - gap;
             int cardH = Math.Min(420, ContentH - y - 16);
             int updateH = Math.Min(260, ContentH - y - cardH - gap * 2);
             if (updateH < 130) updateH = 130;

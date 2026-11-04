@@ -23,6 +23,34 @@ namespace KeyInsight.UI.Pages
 
         public override string Title { get { return "总览"; } }
         public override string Subtitle { get { return "今天的键盘使用情况与累计数据"; } }
+
+        /// <summary>KPI 行在窄窗口下换行：5 张卡片最小约 158px，放不下就折成 3+2 或 2+2+1。</summary>
+        private int KpiPerRow
+        {
+            get
+            {
+                int w = ContentW;
+                if (w >= 5 * 158 + 4 * 14) return 5;
+                if (w >= 3 * 158 + 2 * 14) return 3;
+                return 2;
+            }
+        }
+
+        private int KpiRows
+        {
+            get { return (5 + KpiPerRow - 1) / KpiPerRow; }
+        }
+
+        protected override int MinContentHeight
+        {
+            get
+            {
+                int rows = KpiRows;
+                int kpiBottom = 62 + rows * 106 + (rows - 1) * 14;
+                int need = kpiBottom + 14 + 2 * 200 + 14;   // 下方两张图最小高度 200
+                return Math.Max(686, need);
+            }
+        }
         public override DateTime RangeStart { get { return DateTime.Today; } }
         public override DateTime RangeEnd { get { return DateTime.Today; } }
 
@@ -33,7 +61,9 @@ namespace KeyInsight.UI.Pages
 
             int y = 62;
             int gap = 14;
-            int cardW = (ContentW - gap * 4) / 5;
+            int perRow = KpiPerRow;
+            int rows = KpiRows;
+            int cardW = (ContentW - gap * (perRow - 1)) / perRow;
             int cardH = 106;
 
             long mouseToday = 0;
@@ -41,19 +71,35 @@ namespace KeyInsight.UI.Pages
 
             double rate = Snap.Today.Swallowed / (double)Math.Max(1, Snap.Today.Total + Snap.Today.Swallowed);
             double books = Snap.TotalAll / 100000.0;
-            Charts.StatCard(g, new Rectangle(0, y, cardW, cardH), p, "今日按键", Charts.Number(Snap.Today.Total),
-                Snap.Today.ActiveMinutes + " 分钟 · 峰值 " + Charts.Number(Snap.Today.KpmPeak) + " KPM", p.Accent1);
-            Charts.StatCard(g, new Rectangle(cardW + gap, y, cardW, cardH), p, "今日鼠标",
-                Charts.Number(mouseToday), "左/右/中/侧键 + 滚轮", p.Info);
-            Charts.StatCard(g, new Rectangle((cardW + gap) * 2, y, cardW, cardH), p, "今日拦截", Charts.Number(Snap.Today.Swallowed),
-                "抖动率 " + (rate * 100).ToString("F1") + "%", p.Bad);
-            Charts.StatCard(g, new Rectangle((cardW + gap) * 3, y, cardW, cardH), p, "今日平均 KPM",
+            string[] labels = new string[] { "今日按键", "今日鼠标", "今日拦截", "今日平均 KPM", "累计按键" };
+            string[] values = new string[]
+            {
+                Charts.Number(Snap.Today.Total),
+                Charts.Number(mouseToday),
+                Charts.Number(Snap.Today.Swallowed),
                 Charts.Number(Math.Round(Snap.Today.KpmAverage)),
-                "最近 1 分钟 " + Charts.Number(Snap.KpmNow) + " KPM", p.Accent2);
-            Charts.StatCard(g, new Rectangle((cardW + gap) * 4, y, cardW, cardH), p, "累计按键",
-                Charts.Number(Snap.TotalAll), "≈ 写完 " + books.ToString("F1") + " 本 10 万字小说", p.Accent3);
+                Charts.Number(Snap.TotalAll)
+            };
+            string[] subs = new string[]
+            {
+                Snap.Today.ActiveMinutes + " 分钟 · 峰值 " + Charts.Number(Snap.Today.KpmPeak) + " KPM",
+                "左/右/中/侧键 + 滚轮",
+                "抖动率 " + (rate * 100).ToString("F1") + "%",
+                "最近 1 分钟 " + Charts.Number(Snap.KpmNow) + " KPM",
+                "≈ 写完 " + books.ToString("F1") + " 本 10 万字小说"
+            };
+            Color[] accents = new Color[] { p.Accent1, p.Info, p.Bad, p.Accent2, p.Accent3 };
+            int kpiPad = cardW < 200 ? 14 : 18;
+            Font kpiFont = Charts.FitValueFont(g, values, Math.Max(20, cardW - kpiPad * 2), 38);
+            for (int i = 0; i < labels.Length; i++)
+            {
+                int col = i % perRow;
+                int row = i / perRow;
+                Charts.StatCard(g, new Rectangle(col * (cardW + gap), y + row * (cardH + gap), cardW, cardH),
+                    p, labels[i], values[i], subs[i], accents[i], kpiFont);
+            }
 
-            int top = y + cardH + gap;
+            int top = y + rows * cardH + (rows - 1) * gap + gap;
             int leftW = (int)(ContentW * 0.63);
             int rightW = ContentW - leftW - gap;
             int rowH = (ContentH - top - gap) / 2;

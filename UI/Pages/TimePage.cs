@@ -56,12 +56,21 @@ namespace KeyInsight.UI.Pages
             Dictionary<string, long> appTime = AppTimeForRange();
             _appTotalSeconds = AppTimeTracker.TotalSeconds(appTime);
 
-            SmallCard(g, new Rectangle(0, y, cardW, smallH), p, "范围按键", Charts.Number(Snap.Range.Total), p.Accent1);
+            string[] kpiValues = new string[]
+            {
+                Charts.Number(Snap.Range.Total),
+                Charts.Number(Snap.CombinedActiveMinutes),
+                HourRange(peak),
+                FormatDuration(_appTotalSeconds)
+            };
+            Font kpiFont = Charts.FitValueFont(g, kpiValues, Math.Max(20, cardW - 40), 30);
+            SmallCard(g, new Rectangle(0, y, cardW, smallH), p, "范围按键", kpiValues[0], p.Accent1, kpiFont);
             SmallCard(g, new Rectangle(cardW + gap, y, cardW, smallH), p, "综合活跃分钟",
-                Charts.Number(Snap.CombinedActiveMinutes), p.Accent2);
-            SmallCard(g, new Rectangle((cardW + gap) * 2, y, cardW, smallH), p, "最活跃时段", HourRange(peak), p.Accent3);
+                kpiValues[1], p.Accent2, kpiFont);
+            SmallCard(g, new Rectangle((cardW + gap) * 2, y, cardW, smallH), p, "最活跃时段",
+                kpiValues[2], p.Accent3, kpiFont);
             SmallCard(g, new Rectangle((cardW + gap) * 3, y, cardW, smallH), p, "应用活跃时长",
-                FormatDuration(_appTotalSeconds), p.Info);
+                kpiValues[3], p.Info, kpiFont);
 
             // PR-3：Standard 宽度把两张图并排，趋势全宽底部；Compact 宽度堆叠。
             bool twoCol = ContentW >= 860;
@@ -378,12 +387,18 @@ namespace KeyInsight.UI.Pages
             }
         }
 
-        private static void SmallCard(Graphics g, Rectangle r, Palette p, string label, string value, Color accent)
+        private static void SmallCard(Graphics g, Rectangle r, Palette p, string label, string value,
+            Color accent, Font valueFont)
         {
             Charts.Card(g, r, p);
             Ui.FillRound(g, new RectangleF(r.X + 16, r.Y + 16, 4, 18), 2, accent);
-            Ui.TextLeft(g, label, Ui.BodySmall, p.Muted, new Rectangle(r.X + 28, r.Y + 12, r.Width - 40, 24));
-            Ui.TextLeft(g, value, Ui.CardValueSmall, p.Text, new Rectangle(r.X + 16, r.Y + 36, r.Width - 32, 28));
+            Ui.TextLeftFit(g, label, Ui.BodySmall, p.Muted, new Rectangle(r.X + 28, r.Y + 12, r.Width - 40, 24));
+            int avail = Math.Max(20, r.Width - 32);
+            Font vf = valueFont;
+            if (vf == null || Ui.MeasureWidth(g, value, vf) > avail) vf = Charts.FitValueFont(g, value, avail, 30);
+            if (vf == null) vf = Ui.CardValueSmall;
+            if (vf.Height / Math.Max(0.01f, Ui.InkScale(g)) > 30) vf = Ui.CardValueSmall;
+            Ui.TextLeftFit(g, value, vf, p.Text, new Rectangle(r.X + 16, r.Y + 36, avail, 30));
         }
 
         /// <summary>Screenshot-mode hover preview (tooltip styling verification).</summary>

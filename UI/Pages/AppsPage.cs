@@ -137,11 +137,19 @@ namespace KeyInsight.UI.Pages
             int gap = 10;
             int w = (card.Width - 40 - gap) / 2;
             int h = 66;
-            MiniStat(g, new Rectangle(x, statsY, w, h), p, "按键数", Charts.Number(app.Total), p.Accent1);
-            MiniStat(g, new Rectangle(x + w + gap, statsY, w, h), p, "拦截", Charts.Number(app.Swallowed), p.Bad);
-            MiniStat(g, new Rectangle(x, statsY + h + gap, w, h), p, "活跃时段", HourRange(PeakHour(app.Hours)), p.Accent2);
+            string[] miniValues = new string[]
+            {
+                Charts.Number(app.Total),
+                Charts.Number(app.Swallowed),
+                HourRange(PeakHour(app.Hours)),
+                (app.Total * 100.0 / Math.Max(1, Snap.Range.Total)).ToString("F1") + "%"
+            };
+            Font miniFont = Charts.FitValueFont(g, miniValues, Math.Max(20, w - 34), 28);
+            MiniStat(g, new Rectangle(x, statsY, w, h), p, "按键数", miniValues[0], p.Accent1, miniFont);
+            MiniStat(g, new Rectangle(x + w + gap, statsY, w, h), p, "拦截", miniValues[1], p.Bad, miniFont);
+            MiniStat(g, new Rectangle(x, statsY + h + gap, w, h), p, "活跃时段", miniValues[2], p.Accent2, miniFont);
             MiniStat(g, new Rectangle(x + w + gap, statsY + h + gap, w, h), p, "占比",
-                (app.Total * 100.0 / Math.Max(1, Snap.Range.Total)).ToString("F1") + "%", p.Accent3);
+                miniValues[3], p.Accent3, miniFont);
 
             int listY = statsY + (h + gap) * 2 + 6;
             Ui.TextLeft(g, "Top 按键", Ui.Section, p.Text, new Rectangle(x, listY, card.Width - 40, 24));
@@ -165,13 +173,19 @@ namespace KeyInsight.UI.Pages
             Ui.TextRight(g, "23", Ui.Label, p.Dim, new Rectangle(bars.Right - 22, bars.Bottom + 2, 22, 14));
         }
 
-        private static void MiniStat(Graphics g, Rectangle r, Palette p, string label, string value, Color accent)
+        private static void MiniStat(Graphics g, Rectangle r, Palette p, string label, string value,
+            Color accent, Font valueFont)
         {
             Ui.FillRound(g, r, 10, p.CardAlt);
             Ui.StrokeRound(g, r, 10, p.Border);
             Ui.FillRound(g, new RectangleF(r.X + 14, r.Y + 16, 3, 16), 1.5f, accent);
-            Ui.TextLeft(g, label, Ui.Label, p.Muted, new Rectangle(r.X + 24, r.Y + 10, r.Width - 34, 20));
-            Ui.TextLeft(g, value, Ui.CardValueSmall, p.Text, new Rectangle(r.X + 24, r.Y + 30, r.Width - 34, 26));
+            Ui.TextLeftFit(g, label, Ui.Label, p.Muted, new Rectangle(r.X + 24, r.Y + 10, r.Width - 34, 20));
+            int avail = Math.Max(20, r.Width - 34);
+            Font vf = valueFont;
+            if (vf == null || Ui.MeasureWidth(g, value, vf) > avail) vf = Charts.FitValueFont(g, value, avail, 28);
+            if (vf == null) vf = Ui.CardValueSmall;
+            if (vf.Height / Math.Max(0.01f, Ui.InkScale(g)) > 28) vf = Ui.CardValueSmall;
+            Ui.TextLeftFit(g, value, vf, p.Text, new Rectangle(r.X + 24, r.Y + 30, avail, 28));
         }
 
         private static string TopApp(Dictionary<string, AppAgg> apps)

@@ -130,7 +130,7 @@ namespace KeyInsight.Perf
                 form.ShowInTaskbar = false;
                 form.StartPosition = FormStartPosition.Manual;
                 form.Location = new Point(-6000, -6000);
-                form.Size = new Size(1200, 780);
+                form.Size = new Size(Ui.Px(1200), Ui.Px(780));
                 form.Show();
                 Application.DoEvents();
 

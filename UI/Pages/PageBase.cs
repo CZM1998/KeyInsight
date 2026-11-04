@@ -1,4 +1,5 @@
 using System;
+using System.Drawing.Drawing2D;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Diagnostics;
@@ -95,13 +96,19 @@ namespace KeyInsight.UI.Pages
             {
                 if (EnsureLayer())
                 {
-                    // 静态内容已缓存：整块 BitBlt 拷贝 + 叠加层（hover/tooltip）
+                    // 静态内容已缓存：整块 BitBlt 拷贝（物理像素）+ 设计坐标叠加层
                     _staticLayer.BlitTo(g, _canvas.ClientSize.Width, _canvas.ClientSize.Height);
+                    GraphicsState st = g.Save();
+                    if (Ui.Scale != 1f) g.ScaleTransform(Ui.Scale, Ui.Scale);
                     DrawOverlay(g);
+                    g.Restore(st);
                 }
                 else
                 {
+                    GraphicsState st = g.Save();
+                    if (Ui.Scale != 1f) g.ScaleTransform(Ui.Scale, Ui.Scale);
                     Draw(g);
+                    g.Restore(st);
                 }
             }
             UiMetrics.RecordPaint(GetType().Name.Replace("Page", ""),
@@ -124,6 +131,7 @@ namespace KeyInsight.UI.Pages
                     if (lg == null) return false;
                     lg.Clear(Theme.P.Bg);
                     Ui.Prep(lg);
+                    if (Ui.Scale != 1f) lg.ScaleTransform(Ui.Scale, Ui.Scale);
                     Draw(lg);
                 }
                 _staticLayerValid = true;
@@ -167,7 +175,7 @@ namespace KeyInsight.UI.Pages
 
         public new void Invalidate(Rectangle rc)
         {
-            _canvas.Invalidate(rc);
+            _canvas.Invalidate(Ui.PxRect(rc));
         }
 
         /// <summary>仅重绘叠加层（hover/tooltip 等），复用已渲染的静态层。</summary>
@@ -180,8 +188,8 @@ namespace KeyInsight.UI.Pages
         private void SyncCanvas()
         {
             int w = Math.Max(10, ClientSize.Width);
-            int h = Math.Max(ClientSize.Height, MinContentHeight);
-            _canvas.Bounds = new Rectangle(0, -_scrollY, w, h);
+            int h = Math.Max(ClientSize.Height, Ui.Px(ContentH));
+            _canvas.Bounds = new Rectangle(0, -Ui.Px(_scrollY), w, h);
         }
 
         /// <summary>滚动位置变化（壳层据此重绘右侧自绘滚动条）。</summary>
@@ -194,16 +202,22 @@ namespace KeyInsight.UI.Pages
             get { return 686; }
         }
 
-        /// <summary>布局用内容高度：始终 ≥ 视口高度，页面内所有纵向计算都应使用本属性。</summary>
+        /// <summary>布局用内容高度（设计单位）：始终 ≥ 视口高度。</summary>
         protected int ContentH
         {
-            get { return Math.Max(ClientSize.Height, MinContentHeight); }
+            get { return Math.Max(ViewportH, MinContentHeight); }
         }
 
-        /// <summary>布局用内容宽度：滚轮滚动条占据非客户区，右对齐元素必须按客户端宽度计算。</summary>
+        /// <summary>布局用内容宽度（设计单位）：滚轮滚动条占据非客户区，右对齐元素必须按客户端宽度计算。</summary>
         protected int ContentW
         {
-            get { return ClientSize.Width; }
+            get { return Math.Max(1, (int)Math.Round(ClientSize.Width / Ui.Scale)); }
+        }
+
+        /// <summary>视口高度（设计单位）。</summary>
+        protected int ViewportH
+        {
+            get { return Math.Max(1, (int)Math.Round(ClientSize.Height / Ui.Scale)); }
         }
 
         /// <summary>当前内容滚动偏移（0 表示顶部）。壳层绘制滚动条时读取。</summary>
@@ -212,10 +226,10 @@ namespace KeyInsight.UI.Pages
             get { return _scrollY; }
         }
 
-        /// <summary>可滚动最大值（内容高 - 视口高）。</summary>
+        /// <summary>可滚动最大值（内容高 - 视口高，设计单位）。</summary>
         public int ScrollMax
         {
-            get { return Math.Max(0, ContentH - ClientSize.Height); }
+            get { return Math.Max(0, ContentH - ViewportH); }
         }
 
         protected int ViewTop
@@ -225,19 +239,19 @@ namespace KeyInsight.UI.Pages
 
         protected int ViewBottom
         {
-            get { return _scrollY + ClientSize.Height; }
+            get { return _scrollY + ViewportH; }
         }
 
-        /// <summary>画布事件坐标已是内容坐标；保留本方法供页面统一调用（恒等映射）。</summary>
+        /// <summary>物理（画布）坐标 → 内容设计坐标。</summary>
         protected static Point ToContent(Point p)
         {
-            return p;
+            return Ui.ToDesign(p);
         }
 
-        /// <summary>屏幕光标 → 内容坐标（画布子控件坐标，已包含滚动偏移）。</summary>
+        /// <summary>屏幕光标 → 内容设计坐标（画布子控件坐标，已包含滚动偏移）。</summary>
         protected Point CursorToContent()
         {
-            return _canvas.PointToClient(Cursor.Position);
+            return ToContent(_canvas.PointToClient(Cursor.Position));
         }
 
         public void SetScrollOffset(int offset)
@@ -247,15 +261,15 @@ namespace KeyInsight.UI.Pages
             if (offset > max) offset = max;
             if (offset == _scrollY) return;
             _scrollY = offset;
-            _canvas.Top = -_scrollY;
+            _canvas.Top = -Ui.Px(_scrollY);
             _canvas.Invalidate();
             if (ScrollChanged != null) ScrollChanged();
         }
 
-        /// <summary>鼠标滚轮滚动（由 DashboardForm 转发；delta 为系统 Wheel 增量）。</summary>
+        /// <summary>鼠标滚轮滚动（delta 为系统 Wheel 增量，物理像素 → 设计单位）。</summary>
         public void ScrollByWheel(int delta)
         {
-            SetScrollOffset(_scrollY - delta);
+            SetScrollOffset(_scrollY - (int)Math.Round(delta / Ui.Scale));
         }
 
         protected override void OnResize(EventArgs e)
@@ -327,8 +341,8 @@ namespace KeyInsight.UI.Pages
         protected void DrawHeader(Graphics g)
         {
             Palette p = Theme.P;
-            Ui.TextLeft(g, Title, Ui.PageTitle, p.Text, new Rectangle(0, 0, Math.Max(200, Width - 400), 34));
-            Ui.TextLeft(g, Subtitle, Ui.BodySmall, p.Muted, new Rectangle(0, 34, Math.Max(200, Width - 400), 20));
+            Ui.TextLeftFit(g, Title, Ui.PageTitle, p.Text, new Rectangle(0, 0, Math.Max(200, ContentW - 24), 34));
+            Ui.TextLeftFit(g, Subtitle, Ui.BodySmall, p.Muted, new Rectangle(0, 34, Math.Max(200, ContentW - 24), 20));
         }
 
         protected void DrawRangeChips(Graphics g, int x, int y)

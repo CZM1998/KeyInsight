@@ -76,18 +76,79 @@ namespace KeyInsight.UI
             Ui.StrokeRound(g, r, 10, p.Border);
         }
 
-        public static void StatCard(Graphics g, Rectangle r, Palette p, string label, string value, string sub, Color accent)
+        public static void StatCard(Graphics g, Rectangle r, Palette p, string label, string value,
+            string sub, Color accent)
+        {
+            StatCard(g, r, p, label, value, sub, accent, null);
+        }
+
+        /// <summary>数值卡片；valueFont 传入时整行统一字号（避免同一排卡片大小不一）。</summary>
+        public static void StatCard(Graphics g, Rectangle r, Palette p, string label, string value,
+            string sub, Color accent, Font valueFont)
         {
             Card(g, r, p);
-            int pad = 18;
+            int pad = r.Width < 200 ? 14 : 18;
             Ui.FillRound(g, new RectangleF(r.X + pad, r.Y + 14, 4, 20), 2, accent);
-            Ui.TextLeft(g, label, Ui.BodySmall, p.Muted, new Rectangle(r.X + pad + 12, r.Y + 11, r.Width - pad * 2 - 12, 22));
-            Ui.TextLeft(g, value, Ui.CardValue, p.Text, new Rectangle(r.X + pad, r.Y + 30, r.Width - pad * 2, 38));
+            Ui.TextLeftFit(g, label, Ui.BodySmall, p.Muted,
+                new Rectangle(r.X + pad + 12, r.Y + 11, r.Width - pad * 2 - 12, 22));
+
+            int avail = Math.Max(20, r.Width - pad * 2);
+            Font vf = valueFont;
+            float inkScale = Math.Max(0.01f, Ui.InkScale(g));
+            if (vf == null)
+            {
+                // 数值按宽高自动降档：24pt → 18pt → 15pt，避免窄卡片把数字裁掉
+                vf = Ui.CardValue;
+                if (Ui.MeasureWidth(g, value, vf) > avail || vf.Height / inkScale > 38) vf = Ui.CardValueSmall;
+                if (Ui.MeasureWidth(g, value, vf) > avail || vf.Height / inkScale > 38) vf = Ui.CardValueTiny;
+            }
+            else if (Ui.MeasureWidth(g, value, vf) > avail || vf.Height / inkScale > 38)
+            {
+                vf = Ui.CardValueSmall;
+                if (Ui.MeasureWidth(g, value, vf) > avail) vf = Ui.CardValueTiny;
+            }
+            Ui.TextLeftFit(g, value, vf, p.Text, new Rectangle(r.X + pad, r.Y + 30, avail, 38));
+
             if (!string.IsNullOrEmpty(sub))
             {
-                Ui.TextLeftEllipsis(g, sub, Ui.Label, p.Dim,
+                Ui.TextLeftFit(g, sub, Ui.Label, p.Dim,
                     new Rectangle(r.X + pad, r.Bottom - 30, r.Width - pad * 2, 18));
             }
+        }
+
+        /// <summary>单值卡片取放得下的最大字号。</summary>
+        public static Font FitValueFont(Graphics g, string value, int avail)
+        {
+            return FitValueFont(g, new string[] { value }, avail, int.MaxValue);
+        }
+
+        public static Font FitValueFont(Graphics g, string value, int avail, int maxHeight)
+        {
+            return FitValueFont(g, new string[] { value }, avail, maxHeight);
+        }
+
+        /// <summary>同一排卡片统一取“所有值都放得下（宽 + 高）”的最大字号。</summary>
+        public static Font FitValueFont(Graphics g, string[] values, int avail)
+        {
+            return FitValueFont(g, values, avail, int.MaxValue);
+        }
+
+        public static Font FitValueFont(Graphics g, string[] values, int avail, int maxHeight)
+        {
+            float ink = Math.Max(0.01f, Ui.InkScale(g));
+            Font[] candidates = new Font[] { Ui.CardValue, Ui.CardValueSmall, Ui.CardValueTiny };
+            for (int c = 0; c < candidates.Length; c++)
+            {
+                if (maxHeight != int.MaxValue && candidates[c].Height / ink > maxHeight) continue;
+                bool ok = true;
+                for (int i = 0; i < values.Length; i++)
+                {
+                    if (values == null || values[i] == null) continue;
+                    if (Ui.MeasureWidth(g, values[i], candidates[c]) > avail) { ok = false; break; }
+                }
+                if (ok) return candidates[c];
+            }
+            return Ui.CardValueTiny;
         }
 
         public static void DrawBars24(Graphics g, Rectangle r, int[] hours, Palette p)
