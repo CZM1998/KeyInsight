@@ -71,6 +71,35 @@ namespace KeyInsight.Perf
                 }
             }
 
+            // 1.6) Logo 掉落彩蛋：定格一帧下落中的 Logo（两主题）
+            for (int pass = 0; pass < 2; pass++)
+            {
+                bool dark = pass == 0;
+                Theme.ForceDark = dark;
+                Theme.Refresh();
+                form.ApplyTheme();
+                form.SelectPage(0);
+                Application.DoEvents();
+                form.PreviewLogoFall(360f, -35f);
+                Save(form, Path.Combine(outDir, (dark ? "dark" : "light") + "-logo-fall.png"));
+                form.PreviewLogoReset();
+            }
+
+            // 1.7) Logo 连点彩蛋：真实走 OnMouseDown 命中 + 动画定时器 + 自动归位
+            Theme.ForceDark = true;
+            Theme.Refresh();
+            form.ApplyTheme();
+            form.SelectPage(0);
+            form.Size = new Size(1200, 780);
+            Application.DoEvents();
+            SendLogoClicks(form, 5);
+            Pump(230);
+            Save(form, Path.Combine(outDir, "dark-logo-drop.png"));
+            Pump(320);
+            Save(form, Path.Combine(outDir, "dark-logo-drop2.png"));
+            Pump(5000);
+            Save(form, Path.Combine(outDir, "dark-logo-restored.png"));
+
             // 2) 键盘悬停与 87 键特写（沿用旧文件名）
             Theme.ForceDark = true;
             Theme.Refresh();
@@ -152,6 +181,33 @@ namespace KeyInsight.Perf
             {
                 form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
                 bmp.Save(path, ImageFormat.Png);
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        /// <summary>边泵消息边等待：WinForms Timer 只在消息循环里推进，Thread.Sleep 不会走动画。</summary>
+        private static void Pump(int ms)
+        {
+            DateTime end = DateTime.UtcNow.AddMilliseconds(ms);
+            while (DateTime.UtcNow < end)
+            {
+                Application.DoEvents();
+                Thread.Sleep(5);
+            }
+        }
+
+        /// <summary>向标题栏 Logo 发送真实鼠标按下/抬起消息，走 OnMouseDown 的彩蛋计数。</summary>
+        private static void SendLogoClicks(Form form, int count)
+        {
+            IntPtr lp = (IntPtr)((29 << 16) | 33);   // 客户端坐标 (33,29)：Logo 中心
+            for (int i = 0; i < count; i++)
+            {
+                SendMessage(form.Handle, 0x0201, (IntPtr)1, lp);   // WM_LBUTTONDOWN
+                SendMessage(form.Handle, 0x0202, IntPtr.Zero, lp); // WM_LBUTTONUP
+                Application.DoEvents();
+                Thread.Sleep(90);
             }
         }
     }

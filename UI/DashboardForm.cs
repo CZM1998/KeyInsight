@@ -70,6 +70,27 @@ namespace KeyInsight.UI
         private Rectangle _closeRect;
         private readonly Timer _timer;
         private readonly Image _logo;
+        // 彩蛋：连点标题栏 Logo，图标会“脱落”掉到侧栏底部，停留片刻后自动归位
+        private readonly Timer _logoAnim;
+        private readonly Random _rng = new Random();
+        private const int LogoBaseX = 18;
+        private const int LogoBaseY = 14;
+        private const int LogoSize = 30;
+        private int _logoTaps;
+        private DateTime _logoLastTapUtc = DateTime.MinValue;
+        private int _logoState;                 // 0 静止 / 1 下落 / 2 落地停留 / 3 归位
+        private float _logoX = LogoBaseX;
+        private float _logoY = LogoBaseY;
+        private float _logoVx;
+        private float _logoVy;
+        private float _logoRot;
+        private float _logoSpin;
+        private float _logoFromX;
+        private float _logoFromY;
+        private float _logoFromRot;
+        private DateTime _logoAnimLastUtc;
+        private DateTime _logoRestUntilUtc;
+        private DateTime _logoReturnStartUtc;
         private readonly Services.DeviceCenter.DeviceCenterService _deviceCenter;
         private bool _exiting;
         private StatsEngine _asyncEngine;
@@ -130,6 +151,10 @@ namespace KeyInsight.UI
 
             _logo = LoadLogo();
             Icon = LoadAppIcon();
+
+            _logoAnim = new Timer();
+            _logoAnim.Interval = 15;
+            _logoAnim.Tick += LogoAnimTick;
 
             _pages = new PageBase[]
             {
@@ -437,6 +462,29 @@ namespace KeyInsight.UI
             Application.DoEvents();
         }
 
+        /// <summary>截图回归用：把 Logo 固定在下落中的某一帧（不启动动画）。</summary>
+        internal void PreviewLogoFall(float y, float rot)
+        {
+            if (_logo == null) return;
+            _logoAnim.Stop();
+            _logoState = 1;
+            _logoX = LogoBaseX + 34f;
+            _logoY = y;
+            _logoRot = rot;
+            _logoVx = 0f;
+            _logoVy = 0f;
+            _logoSpin = 0f;
+            InvalidateLogo();
+            Update();
+        }
+
+        internal void PreviewLogoReset()
+        {
+            ResetLogoAnim();
+            InvalidateLogo();
+            Update();
+        }
+
         public void ApplyTheme()
         {
             BackColor = Theme.P.Bg;
@@ -535,19 +583,16 @@ namespace KeyInsight.UI
             using (SolidBrush b = new SolidBrush(p.Sidebar)) g.FillRectangle(b, side);
             using (Pen pen = new Pen(p.Border, 1f)) g.DrawLine(pen, SidebarWidth - 1, TitleHeight, SidebarWidth - 1, ClientSize.Height);
 
-            if (_logo != null)
-            {
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(_logo, new Rectangle(18, 14, 30, 30));
-            }
             Ui.TextLeft(g, "KeyInsight", Ui.BrandTitle, p.Text,
-                new Rectangle(58, 8, 220, 26));
+                new Rectangle(58, LogoBaseY, 220, LogoSize));
 
             DrawStatus(g, p);
             DrawGroupTabs(g, p);
             DrawPageScrollBar(g, p);
             DrawWindowButtons(g, p);
             DrawNav(g, p);
+            // Logo 最后画：掉落时会在侧栏导航之上，不会被导航高亮盖住
+            DrawLogo(g);
 
             Ui.TextLeft(g, "v" + AppInfo.Version, Ui.Label, p.Dim, new Rectangle(18, ClientSize.Height - 22, 80, 18));
 
@@ -820,6 +865,13 @@ namespace KeyInsight.UI
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
 
+            // Logo 区域先吃掉点击：连点 5 次触发掉落彩蛋，同时避免被当成标题栏拖动
+            if (new Rectangle(LogoBaseX - 4, LogoBaseY - 4, LogoSize + 8, LogoSize + 8).Contains(e.Location))
+            {
+                RegisterLogoTap();
+                return;
+            }
+
             if (ScrollBarHit(e.Location)) return;
 
             if (_closeRect.Contains(e.Location))
@@ -912,12 +964,182 @@ namespace KeyInsight.UI
             if (!_exiting && !ScreenshotMode)
             {
                 e.Cancel = true;
+                ResetLogoAnim();
                 Hide();
                 return;
             }
             _timer.Stop();
+            ResetLogoAnim();
             Theme.Changed -= ApplyTheme;
             base.OnFormClosing(e);
+        }
+
+        private int LogoFloorY
+        {
+            get { return Math.Max(LogoBaseY, ClientSize.Height - LogoSize - 34); }
+        }
+
+        private void DrawLogo(Graphics g)
+        {
+            if (_logo == null) return;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            if (_logoState == 0)
+            {
+                g.DrawImage(_logo, new Rectangle(LogoBaseX, LogoBaseY, LogoSize, LogoSize));
+                return;
+            }
+
+            // 地面投影：离地越高越淡越小，落地时收拢
+            float gap = Math.Max(0f, LogoFloorY - _logoY);
+            int shadowAlpha = (int)Math.Max(0f, 64f - gap * 0.16f);
+            if (shadowAlpha > 0)
+            {
+                int sw = (int)Math.Max(12f, LogoSize - gap * 0.03f);
+                float cx = _logoX + LogoSize / 2f;
+                RectangleF sh = new RectangleF(cx - sw / 2f, LogoFloorY + LogoSize - 3, sw, 5);
+                using (SolidBrush b = new SolidBrush(Ui.WithAlpha(Color.Black, shadowAlpha)))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.FillEllipse(b, sh);
+                }
+            }
+
+            GraphicsState state = g.Save();
+            g.TranslateTransform(_logoX + LogoSize / 2f, _logoY + LogoSize / 2f);
+            if (Math.Abs(_logoRot) > 0.01f) g.RotateTransform(_logoRot);
+            g.DrawImage(_logo, new RectangleF(-LogoSize / 2f, -LogoSize / 2f, LogoSize, LogoSize));
+            g.Restore(state);
+        }
+
+        private void InvalidateLogo()
+        {
+            // 只在标题栏 + 侧栏范围内重绘：Logo 的活动范围被限制在这一列
+            Invalidate(new Rectangle(0, 0, SidebarWidth + 2, ClientSize.Height));
+        }
+
+        private void ResetLogoAnim()
+        {
+            if (_logoAnim != null) _logoAnim.Stop();
+            _logoState = 0;
+            _logoX = LogoBaseX;
+            _logoY = LogoBaseY;
+            _logoRot = 0f;
+            _logoTaps = 0;
+        }
+
+        private void RegisterLogoTap()
+        {
+            if (_logoState != 0) return;             // 动画进行中不重复触发
+            DateTime now = DateTime.UtcNow;
+            if ((now - _logoLastTapUtc).TotalMilliseconds > 900.0) _logoTaps = 0;
+            _logoLastTapUtc = now;
+            _logoTaps++;
+            if (_logoTaps < 5) return;
+            _logoTaps = 0;
+            StartLogoDrop(now);
+        }
+
+        private void StartLogoDrop(DateTime now)
+        {
+            if (_logo == null) return;
+            _logoState = 1;
+            _logoX = LogoBaseX;
+            _logoY = LogoBaseY;
+            _logoVx = (float)(_rng.NextDouble() * 60.0 - 10.0);
+            _logoVy = 40f;
+            _logoRot = 0f;
+            _logoSpin = (float)(_rng.NextDouble() * 200.0 + 220.0) * (_rng.Next(2) == 0 ? -1f : 1f);
+            _logoAnimLastUtc = now;
+            _logoAnim.Start();
+            InvalidateLogo();
+        }
+
+        private void LogoAnimTick(object sender, EventArgs e)
+        {
+            DateTime now = DateTime.UtcNow;
+            float dt = (float)(now - _logoAnimLastUtc).TotalSeconds;
+            _logoAnimLastUtc = now;
+            if (dt < 0f) dt = 0f;
+            if (dt > 0.05f) dt = 0.05f;             // 掉帧时限步，避免穿透地面
+
+            int floor = LogoFloorY;
+
+            if (_logoState == 1)
+            {
+                _logoVy += 2400f * dt;               // 重力
+                _logoX += _logoVx * dt;
+                _logoY += _logoVy * dt;
+                _logoRot += _logoSpin * dt;
+
+                float minX = 8f;
+                float maxX = Math.Max(minX, SidebarWidth - LogoSize - 8f);
+                if (_logoX < minX)
+                {
+                    _logoX = minX;
+                    _logoVx = -_logoVx * 0.55f;
+                    _logoSpin *= 0.8f;
+                }
+                else if (_logoX > maxX)
+                {
+                    _logoX = maxX;
+                    _logoVx = -_logoVx * 0.55f;
+                    _logoSpin *= 0.8f;
+                }
+
+                if (_logoY >= floor)
+                {
+                    _logoY = floor;
+                    if (_logoVy > 90f)
+                    {
+                        _logoVy = -_logoVy * 0.42f;  // 回弹
+                        _logoVx *= 0.86f;
+                        _logoSpin *= 0.7f;
+                    }
+                    else
+                    {
+                        _logoVy = 0f;
+                        _logoVx = 0f;
+                        _logoState = 2;
+                        _logoRestUntilUtc = now.AddMilliseconds(2600);
+                    }
+                }
+            }
+            else if (_logoState == 2)
+            {
+                if (_logoY > floor) _logoY = floor;  // 窗口改变大小时贴地
+                float target = (float)(Math.Round(_logoRot / 90.0) * 90.0);
+                _logoRot += (target - _logoRot) * Math.Min(1f, dt * 14f);
+                if (Math.Abs(target - _logoRot) < 0.4f) _logoRot = target;
+                if (now >= _logoRestUntilUtc)
+                {
+                    _logoState = 3;
+                    _logoReturnStartUtc = now;
+                    _logoFromX = _logoX;
+                    _logoFromY = _logoY;
+                    _logoFromRot = _logoRot;
+                }
+            }
+            else if (_logoState == 3)
+            {
+                float t = (float)((now - _logoReturnStartUtc).TotalMilliseconds / 560.0);
+                if (t >= 1f)
+                {
+                    _logoState = 0;
+                    _logoX = LogoBaseX;
+                    _logoY = LogoBaseY;
+                    _logoRot = 0f;
+                    _logoAnim.Stop();
+                    InvalidateLogo();
+                    return;
+                }
+                if (t < 0f) t = 0f;
+                float ease = 1f - (float)Math.Pow(1.0 - t, 3.0);
+                _logoX = _logoFromX + (LogoBaseX - _logoFromX) * ease;
+                _logoY = _logoFromY + (LogoBaseY - _logoFromY) * ease;
+                _logoRot = _logoFromRot * (1f - ease);
+            }
+
+            InvalidateLogo();
         }
 
         private static Image LoadLogo()
