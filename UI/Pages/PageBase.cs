@@ -31,6 +31,10 @@ namespace KeyInsight.UI.Pages
 
         private int _scrollY;
         private readonly PageCanvas _canvas;
+        // 静态层缓存：整页内容（不含 hover 叠加）渲染一次，交互时只做内存 DC 拷贝
+        private readonly KeyInsight.UI.Rendering.LayerSurface _staticLayer =
+            new KeyInsight.UI.Rendering.LayerSurface();
+        private bool _staticLayerValid;
 
         protected PageBase()
         {
@@ -87,10 +91,66 @@ namespace KeyInsight.UI.Pages
 
             long t0 = Stopwatch.GetTimestamp();
             Ui.Prep(g);
-            if (Snap != null) Draw(g);
+            if (Snap != null)
+            {
+                if (EnsureLayer())
+                {
+                    // 静态内容已缓存：整块 BitBlt 拷贝 + 叠加层（hover/tooltip）
+                    _staticLayer.BlitTo(g, _canvas.ClientSize.Width, _canvas.ClientSize.Height);
+                    DrawOverlay(g);
+                }
+                else
+                {
+                    Draw(g);
+                }
+            }
             UiMetrics.RecordPaint(GetType().Name.Replace("Page", ""),
                 (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency);
 
+        }
+
+        /// <summary>静态层：数据/主题/尺寸变化时整页重绘一次，其余时候只做整块拷贝。</summary>
+        private bool EnsureLayer()
+        {
+            Size want = _canvas.ClientSize;
+            if (want.Width <= 0 || want.Height <= 0) return false;
+            if (!_staticLayer.Ensure(want.Width, want.Height)) return false;
+            if (_staticLayerValid) return true;
+
+            try
+            {
+                using (Graphics lg = _staticLayer.BeginRender())
+                {
+                    if (lg == null) return false;
+                    lg.Clear(Theme.P.Bg);
+                    Ui.Prep(lg);
+                    Draw(lg);
+                }
+                _staticLayerValid = true;
+                return true;
+            }
+            catch
+            {
+                _staticLayerValid = false;
+                return false;
+            }
+        }
+
+        /// <summary>静态层之上的叠加绘制（hover 高亮、tooltip）。默认无。</summary>
+        protected virtual void DrawOverlay(Graphics g)
+        {
+        }
+
+        private void DropLayer()
+        {
+            _staticLayerValid = false;
+            _staticLayer.Dispose();
+        }
+
+        /// <summary>诊断/压测用：立即处理挂起的画布重绘（离屏窗口收不到 WM_PAINT 时也能计到真实绘制）。</summary>
+        internal void FlushPaint()
+        {
+            _canvas.Update();
         }
 
         internal void DispatchMouseDown(MouseEventArgs e) { OnMouseDown(e); }
@@ -98,15 +158,22 @@ namespace KeyInsight.UI.Pages
         internal void DispatchMouseUp(MouseEventArgs e) { OnMouseUp(e); }
         internal void DispatchMouseLeave(EventArgs e) { OnMouseLeave(e); }
 
-        /// <summary>页面状态变化统一重绘画布（视口本身无内容）。</summary>
+        /// <summary>页面状态变化统一重绘画布（视口本身无内容）；静态层随之失效。</summary>
         public new void Invalidate()
         {
+            _staticLayerValid = false;
             _canvas.Invalidate();
         }
 
         public new void Invalidate(Rectangle rc)
         {
             _canvas.Invalidate(rc);
+        }
+
+        /// <summary>仅重绘叠加层（hover/tooltip 等），复用已渲染的静态层。</summary>
+        public void InvalidateOverlay()
+        {
+            _canvas.Invalidate();
         }
 
         /// <summary>同步画布尺寸与滚动位置（视口大小、内容高度、滚动值变化时调用）。</summary>
@@ -218,6 +285,7 @@ namespace KeyInsight.UI.Pages
         public virtual void SetSnapshot(StatsSnapshot s)
         {
             Snap = s;
+            _staticLayerValid = false;
             _canvas.Invalidate();
         }
 
@@ -225,7 +293,21 @@ namespace KeyInsight.UI.Pages
         {
             BackColor = Theme.P.Bg;
             if (_canvas != null) _canvas.BackColor = Theme.P.Bg;
+            _staticLayerValid = false;
             Invalidate(true);
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            // 隐藏页面释放静态层：12 页各 3MB 级位图没必要常驻
+            if (!Visible) DropLayer();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) DropLayer();
+            base.Dispose(disposing);
         }
 
         protected void RequestData()

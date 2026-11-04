@@ -112,10 +112,10 @@ namespace KeyInsight.Perf
 
             // 每页绘制耗时（36 个月数据，1200×780）
             md.AppendLine();
-            md.AppendLine("## 页面绘制（离屏渲染 P50，36 个月数据，1200×780）");
+            md.AppendLine("## 页面绘制（离屏渲染，36 个月数据，1200×780）");
             md.AppendLine();
-            md.AppendLine("| 页面 | P50 ms | GDI 对象 |");
-            md.AppendLine("|---|---|---|");
+            md.AppendLine("| 页面 | 首次渲染 ms | 缓存命中 P50 ms | GDI 对象 |");
+            md.AppendLine("|---|---|---|---|");
 
             DashboardForm form = null;
             Config cfg = new Config();
@@ -139,8 +139,9 @@ namespace KeyInsight.Perf
                     form.SelectPage(p);
                     Application.DoEvents();
                     List<double> samples = new List<double>();
+                    double cold = 0;
                     long gdi = GetGuiResources(Process.GetCurrentProcess().Handle, GR_GDIOBJECTS);
-                    for (int i = 0; i < 3; i++)
+                    for (int i = 0; i < 4; i++)
                     {
                         Stopwatch sw = Stopwatch.StartNew();
                         using (Bitmap bmp = new Bitmap(form.Width, form.Height))
@@ -148,11 +149,89 @@ namespace KeyInsight.Perf
                             form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
                         }
                         sw.Stop();
-                        samples.Add(sw.Elapsed.TotalMilliseconds);
+                        if (i == 0) cold = sw.Elapsed.TotalMilliseconds;
+                        else samples.Add(sw.Elapsed.TotalMilliseconds);
                         gdi = GetGuiResources(Process.GetCurrentProcess().Handle, GR_GDIOBJECTS);
                     }
                     samples.Sort();
-                    md.AppendLine("| " + PageNames[p] + " | " + samples[1].ToString("F1") + " | " + gdi + " |");
+                    md.AppendLine("| " + PageNames[p] + " | " + cold.ToString("F1") + " | " +
+                        samples[0].ToString("F1") + " | " + gdi + " |");
+                }
+
+                // hover 重绘压测：Time 页面 120 次柱状图悬停切换（每次悬停变化都会重绘）
+                form.SelectPage(4);
+                Application.DoEvents();
+                KeyInsight.UI.Pages.TimePage tp = form.FindPageForPreview(4) as KeyInsight.UI.Pages.TimePage;
+                if (tp != null && tp.Controls.Count > 0)
+                {
+                    Size canvasSize = tp.Controls[0].ClientSize;
+                    List<double> hoverSamples = new List<double>();
+                    using (Bitmap hb = new Bitmap(Math.Max(10, canvasSize.Width),
+                        Math.Max(10, canvasSize.Height), PixelFormat.Format32bppRgb))
+                    using (Graphics hg = Graphics.FromImage(hb))
+                    {
+                        for (int i = 0; i < 120; i++)
+                        {
+                            tp.PreviewHoverOverlay(1, i % 24);
+                            Stopwatch hs = Stopwatch.StartNew();
+                            tp.PaintPage(hg);
+                            hs.Stop();
+                            hoverSamples.Add(hs.Elapsed.TotalMilliseconds);
+                        }
+                    }
+                    hoverSamples.Sort();
+                    double hoverP50 = hoverSamples[hoverSamples.Count / 2];
+                    double hoverP95 = hoverSamples[(int)(hoverSamples.Count * 0.95)];
+                    double hoverAvg = 0;
+                    for (int i = 0; i < hoverSamples.Count; i++) hoverAvg += hoverSamples[i];
+                    hoverAvg /= hoverSamples.Count;
+                    md.AppendLine();
+                    md.AppendLine("## 悬停重绘压测（Time 页面，120 次柱状图 hover 切换）");
+                    md.AppendLine();
+                    md.AppendLine("| 指标 | P50 | P95 | 平均 |");
+                    md.AppendLine("|---|---|---|---|");
+                    md.AppendLine("| 单次重绘 (ms) | " + hoverP50.ToString("F2") + " | " +
+                        hoverP95.ToString("F2") + " | " + hoverAvg.ToString("F2") + " |");
+
+                    // 静态层整页重建（数据每秒刷新时触发）成本：20 次连续重建
+                    List<double> rebuild = new List<double>();
+                    using (Bitmap rb = new Bitmap(Math.Max(10, canvasSize.Width),
+                        Math.Max(10, canvasSize.Height), PixelFormat.Format32bppRgb))
+                    using (Graphics rg = Graphics.FromImage(rb))
+                    {
+                        for (int i = 0; i < 20; i++)
+                        {
+                            tp.PreviewHover(1, i % 24);          // 完整失效 → 下一次绘制整页重建
+                            Stopwatch rs = Stopwatch.StartNew();
+                            tp.PaintPage(rg);
+                            rs.Stop();
+                            rebuild.Add(rs.Elapsed.TotalMilliseconds);
+                        }
+                    }
+                    rebuild.Sort();
+                    md.AppendLine("| 静态层整页重建 P50 (ms) | " + rebuild[rebuild.Count / 2].ToString("F2") +
+                        " | " + rebuild[rebuild.Count - 1].ToString("F2") + " | " +
+                        (rebuild[0]).ToString("F2") + " 为最快 |");
+
+                    // 对照：窗口移到屏幕内，走真实 WM_PAINT + 双缓冲路径
+                    form.Location = new Point(80, 80);
+                    form.Activate();
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(200);
+                    long pc0 = UiMetrics.PaintCount;
+                    Stopwatch onScreen = Stopwatch.StartNew();
+                    for (int i = 0; i < 120; i++)
+                    {
+                        tp.PreviewHoverOverlay(1, i % 24);
+                        tp.FlushPaint();
+                    }
+                    onScreen.Stop();
+                    long onScreenPaints = UiMetrics.PaintCount - pc0;
+                    md.AppendLine("| 真实窗口重绘 (ms/次) | " + (onScreenPaints > 0
+                        ? (onScreen.Elapsed.TotalMilliseconds / onScreenPaints).ToString("F2") : "-") +
+                        " | 重绘 " + onScreenPaints + " 次 | 含屏上合成 |");
+                    form.Location = new Point(-6000, -6000);
+                    Application.DoEvents();
                 }
 
                 // 运行期 UI 指标（PR-1）：让 Timer 跑约 2.5 秒，读取埋点分位

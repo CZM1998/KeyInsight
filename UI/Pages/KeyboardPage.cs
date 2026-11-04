@@ -18,6 +18,8 @@ namespace KeyInsight.UI.Pages
         private KeyDef _hover;
         private int _layer; // 0=使用 1=疑似异常候选 2=实际拦截
         private Dictionary<int, long> _layerValues;
+        private Rectangle _kbArea;
+        private float _keyRadius = 6f;
 
         private static readonly string[] LayerNames = new string[] { "使用频率", "疑似异常候选", "实际拦截" };
 
@@ -100,14 +102,19 @@ namespace KeyInsight.UI.Pages
             }
 
             Rectangle kbArea = new Rectangle(card.X + 16, card.Y + 54, card.Width - 32, card.Height - 54 - 42);
+            _kbArea = kbArea;
+            float unit = Math.Min(kbArea.Width / (layout.WidthUnits + 0.45f),
+                kbArea.Height / (KeyLayout.HeightUnits + 0.6f));
+            if (unit > 54f) unit = 54f;
+            _keyRadius = Math.Max(4f, unit * 0.16f);
             if (_layer == 0)
             {
-                _hits = Charts.DrawKeyboard(g, kbArea, counts, p, _hover, layout);
+                _hits = Charts.DrawKeyboard(g, kbArea, counts, p, null, layout);
             }
             else
             {
                 if (_layerValues == null) _layerValues = BuildLayerValues(counts);
-                _hits = Charts.DrawKeyboardValues(g, kbArea, _layerValues, p, _hover, layout);
+                _hits = Charts.DrawKeyboardValues(g, kbArea, _layerValues, p, null, layout);
             }
             DrawLegend(g, new Rectangle(card.X + 22, card.Bottom - 30, card.Width - 44, 18), p, counts, total);
 
@@ -133,7 +140,19 @@ namespace KeyInsight.UI.Pages
                 used + " / " + layout.KeyCount, "至少按下一次", p.Accent3);
             Charts.StatCard(g, new Rectangle((cardW + gap) * 3, sy, cardW, statsH), p, "拦截次数",
                 Charts.Number(swallowed), "该范围内的抖动", p.Bad);
+        }
 
+        /// <summary>悬停只重画按键描边与信息卡，复用键盘静态层。</summary>
+        protected override void DrawOverlay(Graphics g)
+        {
+            if (_hover != null)
+            {
+                RectangleF rec;
+                if (_hits.TryGetValue(_hover, out rec))
+                {
+                    Ui.StrokeRound(g, rec, _keyRadius, Theme.P.Accent1, 2f);
+                }
+            }
             DrawHoverTip(g);
         }
 
@@ -356,7 +375,7 @@ namespace KeyInsight.UI.Pages
             if (found != _hover)
             {
                 _hover = found;
-                Invalidate();
+                InvalidateOverlay();
             }
         }
 
@@ -366,7 +385,7 @@ namespace KeyInsight.UI.Pages
             if (_hover != null)
             {
                 _hover = null;
-                Invalidate();
+                InvalidateOverlay();
             }
         }
 

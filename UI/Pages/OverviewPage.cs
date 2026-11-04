@@ -67,7 +67,6 @@ namespace KeyInsight.UI.Pages
             SectionCard(g, hourCard, "今日活跃度（24 小时）", "每个小时的按键次数（悬停查看精确值）");
             _barArea = new Rectangle(hourCard.X + 12, hourCard.Y + 58, hourCard.Width - 24, hourCard.Height - 70);
             Charts.DrawBars24(g, _barArea, Snap.Today.Hours, p, _barSlots);
-            DrawBarTooltip(g, p);
 
             SectionCard(g, keyCard, "最常用按键", "今日 Top 8");
             if (_topKeys.Count == 0) Ui.TextCenter(g, "今天还没有按键数据", Ui.BodySmall, p.Dim,
@@ -98,7 +97,7 @@ namespace KeyInsight.UI.Pages
             if (hour != _hoverHour)
             {
                 _hoverHour = hour;
-                Invalidate();
+                InvalidateOverlay();
             }
         }
 
@@ -108,8 +107,14 @@ namespace KeyInsight.UI.Pages
             if (_hoverHour != -1)
             {
                 _hoverHour = -1;
-                Invalidate();
+                InvalidateOverlay();
             }
+        }
+
+        /// <summary>柱状图悬停高亮与 tooltip 走叠加层，复用静态层。</summary>
+        protected override void DrawOverlay(Graphics g)
+        {
+            if (_hoverHour >= 0) DrawBarTooltip(g, Theme.P);
         }
 
         private void DrawBarTooltip(Graphics g, Palette p)

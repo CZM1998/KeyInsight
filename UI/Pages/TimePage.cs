@@ -124,7 +124,12 @@ namespace KeyInsight.UI.Pages
                 DrawAppTime(g, new Rectangle(0, y4c, ContentW, appHc), appTime, p);
             }
 
-            DrawHoverTooltip(g, p);
+        }
+
+        /// <summary>静态层只管图表与卡片；hover 高亮和 tooltip 每次交互重画。</summary>
+        protected override void DrawOverlay(Graphics g)
+        {
+            if (_hoverKind != 0) DrawHoverTooltip(g, Theme.P);
         }
 
         // ---------------------------------------------------------------- 应用活跃时长
@@ -234,9 +239,12 @@ namespace KeyInsight.UI.Pages
             }
             if (kind != _hoverKind || idx != _hoverIdx)
             {
+                // 图表 hover（1..3）只重画叠加层；应用行高亮画在静态层里（kind 4）
+                bool needsLayer = kind == 4 || _hoverKind == 4;
                 _hoverKind = kind;
                 _hoverIdx = idx;
-                Invalidate();
+                if (needsLayer) Invalidate();
+                else InvalidateOverlay();
             }
         }
 
@@ -273,9 +281,11 @@ namespace KeyInsight.UI.Pages
             base.OnMouseLeave(e);
             if (_hoverKind != 0)
             {
+                bool needsLayer = _hoverKind == 4;
                 _hoverKind = 0;
                 _hoverIdx = -1;
-                Invalidate();
+                if (needsLayer) Invalidate();
+                else InvalidateOverlay();
             }
         }
 
@@ -383,6 +393,15 @@ namespace KeyInsight.UI.Pages
             _hoverIdx = idx;
             // 需要真实光标位置才能画 tooltip；截图模式下用图表区域中心模拟
             Invalidate();
+        }
+
+        /// <summary>压测用：走真实 hover 路径（只重绘叠加层，不重建静态层）。</summary>
+        internal void PreviewHoverOverlay(int kind, int idx)
+        {
+            _hoverKind = kind;
+            _hoverIdx = idx;
+            if (kind == 4) Invalidate();
+            else InvalidateOverlay();
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
