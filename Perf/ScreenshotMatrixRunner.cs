@@ -51,6 +51,26 @@ namespace KeyInsight.Perf
                 }
             }
 
+            // 1.5) Time-page chart hover preview (tooltip styling, both themes)
+            for (int pass = 0; pass < 2; pass++)
+            {
+                bool dark = pass == 0;
+                Theme.ForceDark = dark;
+                Theme.Refresh();
+                form.ApplyTheme();
+                form.SelectPage(4);
+                Application.DoEvents();
+                KeyInsight.UI.Pages.TimePage tp = form.FindPageForPreview(4) as KeyInsight.UI.Pages.TimePage;
+                if (tp != null)
+                {
+                    tp.PreviewHover(1, 10);
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(30);
+                    Save(form, Path.Combine(outDir, (dark ? "dark" : "light") + "-time-hover.png"));
+                    tp.PreviewHover(0, -1);
+                }
+            }
+
             // 2) 键盘悬停与 87 键特写（沿用旧文件名）
             Theme.ForceDark = true;
             Theme.Refresh();

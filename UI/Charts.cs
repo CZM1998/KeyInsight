@@ -480,9 +480,31 @@ namespace KeyInsight.UI
             Ui.TextCenter(g, text, Ui.Body, fg, r);
         }
     
+        /// <summary>柱状图绘图区（hover 全区域命中与索引钳制的单一几何来源）。</summary>
+        public static Rectangle BarsPlot(Rectangle r)
+        {
+            return new Rectangle(r.X + 42, r.Y + 10, Math.Max(10, r.Width - 50),
+                Math.Max(10, r.Height - 32));
+        }
+
+        /// <summary>趋势图绘图区。</summary>
+        public static Rectangle TrendPlot(Rectangle r)
+        {
+            return new Rectangle(r.X + 46, r.Y + 10, Math.Max(10, r.Width - 56),
+                Math.Max(10, r.Height - 30));
+        }
+
+        /// <summary>热力图绘图区。</summary>
+        public static Rectangle HeatPlot(Rectangle r)
+        {
+            return new Rectangle(r.X + 28, r.Y + 18, Math.Max(10, r.Width - 32),
+                Math.Max(10, r.Height - 22));
+        }
+
         /// <summary>
-        /// 图表数据检查浮层（hover tooltip）：深色圆角卡片 + 标题/数值两行，
-        /// 跟随光标并钳制在页面内容区内。由页面在 Draw 末尾调用。
+        /// 图表数据检查浮层（hover tooltip）：与卡片同一设计语言 ——
+        /// Card 面 + BorderStrong 边 + 左侧 Accent 圆角条 + 柔和阴影，
+        /// 深浅主题均取自 Palette；跟随光标并钳制在页面内容区内。
         /// </summary>
         public static void Tooltip(Graphics g, Rectangle bounds, Point cursor,
             string title, string value, Palette p)
@@ -490,34 +512,40 @@ namespace KeyInsight.UI
             if (string.IsNullOrEmpty(title) && string.IsNullOrEmpty(value)) return;
             int tw = string.IsNullOrEmpty(title) ? 0 : Ui.MeasureWidth(g, title, Ui.BodySmall);
             int vw = string.IsNullOrEmpty(value) ? 0 : Ui.MeasureWidth(g, value, Ui.Body);
-            int w = Math.Max(72, Math.Max(tw, vw) + 24);
-            int h = string.IsNullOrEmpty(title) ? 32 : 48;
-            int x = cursor.X + 14;
-            int y = cursor.Y + 16;
-            if (x + w > bounds.Right - 6) x = cursor.X - w - 10;
-            if (y + h > bounds.Bottom - 6) y = cursor.Y - h - 10;
-            if (x < bounds.Left) x = bounds.Left;
-            if (y < bounds.Top) y = bounds.Top;
+            int accentW = 3;
+            int padX = 13;
+            int w = Math.Max(96, Math.Max(tw, vw) + padX * 2 + accentW + 4);
+            int h = string.IsNullOrEmpty(title) ? 34 : 52;
+            int x = cursor.X + 16;
+            int y = cursor.Y + 18;
+            if (x + w > bounds.Right - 6) x = cursor.X - w - 12;
+            if (y + h > bounds.Bottom - 6) y = cursor.Y - h - 12;
+            if (x < bounds.Left + 2) x = bounds.Left + 2;
+            if (y < bounds.Top + 2) y = bounds.Top + 2;
             Rectangle box = new Rectangle(x, y, w, h);
-            using (GraphicsPath path = Ui.RoundRect(new RectangleF(box.X, box.Y, box.Width, box.Height), 8))
-            {
-                using (SolidBrush bg = new SolidBrush(Ui.WithAlpha(p.Dark ? Color.FromArgb(18, 26, 40) : Color.FromArgb(32, 42, 58), 242)))
-                {
-                    g.FillPath(bg, path);
-                }
-                using (Pen pen = new Pen(Ui.WithAlpha(p.Accent1, 200), 1f))
-                {
-                    g.DrawPath(pen, path);
-                }
-            }
+
+            // 柔和投影：层级感与卡片一致，不抢视觉
+            Ui.FillRound(g, new RectangleF(box.X + 2, box.Y + 3, box.Width, box.Height), 10,
+                Color.FromArgb(p.Dark ? 90 : 36, 0, 0, 0));
+            Ui.FillRound(g, box, 10, p.Card);
+            Ui.StrokeRound(g, box, 10, p.BorderStrong);
+            // 左侧 3px 强调条（与 KPI / Mini 卡片同一约定）
+            Ui.FillRound(g, new RectangleF(box.X + 8, box.Y + 9, accentW, box.Height - 18),
+                1.5f, p.Accent1);
+
+            int tx = box.X + 8 + accentW + 10;
+            int tw2 = box.Width - (tx - box.X) - 12;
             if (!string.IsNullOrEmpty(title))
             {
-                Ui.TextLeft(g, title, Ui.BodySmall, p.Text, new Rectangle(box.X + 12, box.Y + 6, box.Width - 24, 18));
-                Ui.TextLeft(g, value, Ui.Body, p.Accent2, new Rectangle(box.X + 12, box.Y + 24, box.Width - 24, 20));
+                Ui.TextLeft(g, title, Ui.BodySmall, p.Muted,
+                    new Rectangle(tx, box.Y + 7, tw2, 18));
+                Ui.TextLeft(g, value, Ui.Body, p.Text,
+                    new Rectangle(tx, box.Y + 26, tw2, 20));
             }
             else
             {
-                Ui.TextLeft(g, value, Ui.Body, p.Text, new Rectangle(box.X + 12, box.Y + 6, box.Width - 24, 20));
+                Ui.TextLeft(g, value, Ui.Body, p.Text,
+                    new Rectangle(tx, box.Y + 7, tw2, 20));
             }
         }
 

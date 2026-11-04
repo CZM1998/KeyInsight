@@ -10,6 +10,7 @@ namespace KeyInsight.UI.Pages
         private List<RankRow> _topKeys = new List<RankRow>();
         private List<RankRow> _topApps = new List<RankRow>();
         private readonly Rectangle[] _barSlots = new Rectangle[24];
+        private Rectangle _barArea;
         private int _hoverHour = -1;
 
         public override void SetSnapshot(StatsSnapshot s)
@@ -64,7 +65,8 @@ namespace KeyInsight.UI.Pages
             Rectangle appCard = new Rectangle(leftW + gap, top + rowH + gap, rightW, ContentH - (top + rowH + gap));
 
             SectionCard(g, hourCard, "今日活跃度（24 小时）", "每个小时的按键次数（悬停查看精确值）");
-            Charts.DrawBars24(g, new Rectangle(hourCard.X + 12, hourCard.Y + 58, hourCard.Width - 24, hourCard.Height - 70), Snap.Today.Hours, p, _barSlots);
+            _barArea = new Rectangle(hourCard.X + 12, hourCard.Y + 58, hourCard.Width - 24, hourCard.Height - 70);
+            Charts.DrawBars24(g, _barArea, Snap.Today.Hours, p, _barSlots);
             DrawBarTooltip(g, p);
 
             SectionCard(g, keyCard, "最常用按键", "今日 Top 8");
@@ -86,9 +88,12 @@ namespace KeyInsight.UI.Pages
             base.OnMouseMove(e);
             Point pt = ToContent(e.Location);
             int hour = -1;
-            for (int i = 0; i < _barSlots.Length; i++)
+            if (_barArea.Width > 0 && _barArea.Contains(pt))
             {
-                if (_barSlots[i].Width > 0 && _barSlots[i].Contains(pt)) { hour = i; break; }
+                Rectangle plot = Charts.BarsPlot(_barArea);
+                hour = (int)((pt.X - plot.X) * 24 / (double)Math.Max(1, plot.Width));
+                if (hour < 0) hour = 0;
+                if (hour > 23) hour = 23;
             }
             if (hour != _hoverHour)
             {
@@ -111,9 +116,10 @@ namespace KeyInsight.UI.Pages
         {
             if (_hoverHour < 0 || _hoverHour >= 24) return;
             Point cur = CursorToContent();
-            Ui.FillRound(g, new RectangleF(_barSlots[_hoverHour].X, _barSlots[_hoverHour].Y,
-                _barSlots[_hoverHour].Width, _barSlots[_hoverHour].Height), 4,
-                Ui.WithAlpha(p.Accent1, 28));
+            Rectangle bplot = Charts.BarsPlot(_barArea);
+            int bslot = Math.Max(1, bplot.Width / 24);
+            Ui.FillRound(g, new RectangleF(bplot.X + _hoverHour * bslot, bplot.Y,
+                bslot, bplot.Height), 4, Ui.WithAlpha(p.Accent1, 28));
             Charts.Tooltip(g, new Rectangle(0, 0, ContentW, ContentH), cur,
                 _hoverHour.ToString("D2") + ":00 - " + ((_hoverHour + 1) % 24).ToString("D2") + ":00",
                 Charts.Number(Snap.Today.Hours[_hoverHour]) + " 次", p);

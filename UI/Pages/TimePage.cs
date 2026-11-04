@@ -13,6 +13,7 @@ namespace KeyInsight.UI.Pages
         private readonly Rectangle[] _barSlots = new Rectangle[24];
         private readonly Rectangle[] _heatCells = new Rectangle[168];
         private readonly Rectangle[] _trendSlots = new Rectangle[30];
+        private Rectangle _barArea, _heatArea, _trendArea;   // full chart hit areas
         private readonly List<AppRow> _appRows = new List<AppRow>();
         private long _appTotalSeconds;
 
@@ -73,18 +74,19 @@ namespace KeyInsight.UI.Pages
                 int chartH = 196;
                 int chartW = (ContentW - gap) / 2;
                 SectionCard(g, new Rectangle(0, y1, chartW, chartH), "24 小时分布", "按小时累计的按键次数");
-                Charts.DrawBars24(g, new Rectangle(12, y1 + 58, chartW - 24, chartH - 68),
-                    Snap.Range.Hours, p, _barSlots);
+                _barArea = new Rectangle(12, y1 + 58, chartW - 24, chartH - 68);
+                Charts.DrawBars24(g, _barArea, Snap.Range.Hours, p, _barSlots);
                 SectionCard(g, new Rectangle(chartW + gap, y1, ContentW - chartW - gap, chartH),
                     "星期 × 小时热力", "颜色越深代表该时段越活跃");
-                Charts.DrawHeat7x24(g, new Rectangle(chartW + gap + 16, y1 + 58,
-                    ContentW - chartW - gap - 32, chartH - 68), Snap.Range.WeekdayHour, p, _heatCells);
+                _heatArea = new Rectangle(chartW + gap + 16, y1 + 58,
+                    ContentW - chartW - gap - 32, chartH - 68);
+                Charts.DrawHeat7x24(g, _heatArea, Snap.Range.WeekdayHour, p, _heatCells);
 
                 int y3 = y1 + chartH + gap;
                 const int trendH = 200;
                 SectionCard(g, new Rectangle(0, y3, trendLeftW, trendH), "最近 30 天趋势", "全部应用，不受上方范围影响");
-                Charts.DrawTrend(g, new Rectangle(12, y3 + 56, trendLeftW - 24, trendH - 62),
-                    Snap.Last30Days, p, _trendSlots);
+                _trendArea = new Rectangle(12, y3 + 56, trendLeftW - 24, trendH - 62);
+                Charts.DrawTrend(g, _trendArea, Snap.Last30Days, p, _trendSlots);
                 SectionCard(g, new Rectangle(trendLeftW + gap, y3, rightW, trendH), "常用快捷键",
                     "仅聚合计数（Ctrl/Alt/Win 组合），不记录按键序列");
                 DrawShortcuts(g, new Rectangle(trendLeftW + gap + 18, y3 + 56, rightW - 36, trendH - 64), p);
@@ -98,20 +100,20 @@ namespace KeyInsight.UI.Pages
             {
                 int hourH = 150;
                 SectionCard(g, new Rectangle(0, y1, ContentW, hourH), "24 小时分布", "按小时累计的按键次数");
-                Charts.DrawBars24(g, new Rectangle(12, y1 + 58, ContentW - 24, hourH - 68),
-                    Snap.Range.Hours, p, _barSlots);
+                _barArea = new Rectangle(12, y1 + 58, ContentW - 24, hourH - 68);
+                Charts.DrawBars24(g, _barArea, Snap.Range.Hours, p, _barSlots);
 
                 int y2 = y1 + hourH + gap;
                 int heatH = 140;
                 SectionCard(g, new Rectangle(0, y2, ContentW, heatH), "星期 × 小时热力", "颜色越深代表该时段越活跃");
-                Charts.DrawHeat7x24(g, new Rectangle(16, y2 + 58, ContentW - 32, heatH - 68),
-                    Snap.Range.WeekdayHour, p, _heatCells);
+                _heatArea = new Rectangle(16, y2 + 58, ContentW - 32, heatH - 68);
+                Charts.DrawHeat7x24(g, _heatArea, Snap.Range.WeekdayHour, p, _heatCells);
 
                 int y3 = y2 + heatH + gap;
                 int trendHc = 190;
                 SectionCard(g, new Rectangle(0, y3, trendLeftW, trendHc), "最近 30 天趋势", "全部应用，不受上方范围影响");
-                Charts.DrawTrend(g, new Rectangle(12, y3 + 56, trendLeftW - 24, trendHc - 62),
-                    Snap.Last30Days, p, _trendSlots);
+                _trendArea = new Rectangle(12, y3 + 56, trendLeftW - 24, trendHc - 62);
+                Charts.DrawTrend(g, _trendArea, Snap.Last30Days, p, _trendSlots);
                 SectionCard(g, new Rectangle(trendLeftW + gap, y3, rightW, trendHc), "常用快捷键",
                     "仅聚合计数（Ctrl/Alt/Win 组合），不记录按键序列");
                 DrawShortcuts(g, new Rectangle(trendLeftW + gap + 18, y3 + 56, rightW - 36, trendHc - 64), p);
@@ -202,25 +204,28 @@ namespace KeyInsight.UI.Pages
             base.OnMouseMove(e);
             Point pt = ToContent(e.Location);
             int kind = 0, idx = -1;
-            for (int i = 0; i < _barSlots.Length; i++)
+            // Full coverage: any point inside a chart card maps to the nearest
+            // bucket (plot rect + clamped index), so gaps and margins hover too.
+            if (_barArea.Width > 0 && _barArea.Contains(pt))
             {
-                if (_barSlots[i].Width > 0 && _barSlots[i].Contains(pt)) { kind = 1; idx = i; break; }
+                kind = 1;
+                idx = IndexFromX(Charts.BarsPlot(_barArea), pt.X, 24);
             }
-            if (kind == 0)
+            else if (_heatArea.Width > 0 && _heatArea.Contains(pt))
             {
-                for (int i = 0; i < _heatCells.Length; i++)
-                {
-                    if (_heatCells[i].Width > 0 && _heatCells[i].Contains(pt)) { kind = 2; idx = i; break; }
-                }
+                Rectangle plot = Charts.HeatPlot(_heatArea);
+                int col = IndexFromX(plot, pt.X, 24);
+                int row = IndexFromY(plot, pt.Y, 7);
+                kind = 2;
+                idx = row * 24 + col;
             }
-            if (kind == 0)
+            else if (_trendArea.Width > 0 && _trendArea.Contains(pt))
             {
-                for (int i = 0; i < _trendSlots.Length; i++)
-                {
-                    if (_trendSlots[i].Width > 0 && _trendSlots[i].Contains(pt)) { kind = 3; idx = i; break; }
-                }
+                Rectangle plot = Charts.TrendPlot(_trendArea);
+                kind = 3;
+                idx = TrendIndex(plot, pt.X, Snap.Last30Days.Length);
             }
-            if (kind == 0)
+            else
             {
                 for (int i = 0; i < _appRows.Count; i++)
                 {
@@ -233,6 +238,34 @@ namespace KeyInsight.UI.Pages
                 _hoverIdx = idx;
                 Invalidate();
             }
+        }
+
+        private static int IndexFromX(Rectangle plot, int x, int count)
+        {
+            if (count <= 1) return 0;
+            int i = (int)((x - plot.X) * count / (double)Math.Max(1, plot.Width));
+            if (i < 0) i = 0;
+            if (i > count - 1) i = count - 1;
+            return i;
+        }
+
+        private static int IndexFromY(Rectangle plot, int y, int count)
+        {
+            if (count <= 1) return 0;
+            int i = (int)((y - plot.Y) * count / (double)Math.Max(1, plot.Height));
+            if (i < 0) i = 0;
+            if (i > count - 1) i = count - 1;
+            return i;
+        }
+
+        private static int TrendIndex(Rectangle plot, int x, int len)
+        {
+            if (len <= 1) return 0;
+            double dx = plot.Width / (double)(len - 1);
+            int i = (int)Math.Round((x - plot.X) / dx);
+            if (i < 0) i = 0;
+            if (i > len - 1) i = len - 1;
+            return i;
         }
 
         protected override void OnMouseLeave(EventArgs e)
@@ -251,14 +284,28 @@ namespace KeyInsight.UI.Pages
             if (_hoverKind == 0 || _hoverIdx < 0) return;
             Point cur = CursorToContent();
             Rectangle bounds = new Rectangle(0, 0, ContentW, ContentH);
+            if (!bounds.Contains(cur) || (cur.X == 0 && cur.Y == 0))
+            {
+                // Screenshot/debug: anchor near the hovered bucket
+                switch (_hoverKind)
+                {
+                    case 1: cur = new Point(Charts.BarsPlot(_barArea).X + 24, Charts.BarsPlot(_barArea).Y + 60); break;
+                    case 2: cur = new Point(Charts.HeatPlot(_heatArea).X + 40, Charts.HeatPlot(_heatArea).Y + 30); break;
+                    case 3: cur = new Point(Charts.TrendPlot(_trendArea).X + 80, Charts.TrendPlot(_trendArea).Y + 40); break;
+                    case 4:
+                        if (_hoverIdx < _appRows.Count) cur = new Point(_appRows[_hoverIdx].Rect.X + 40, _appRows[_hoverIdx].Rect.Y + 10);
+                        break;
+                }
+            }
             switch (_hoverKind)
             {
                 case 1:
                     if (_hoverIdx < _barSlots.Length)
                     {
-                        Ui.FillRound(g, new RectangleF(_barSlots[_hoverIdx].X,
-                            _barSlots[_hoverIdx].Y, _barSlots[_hoverIdx].Width,
-                            _barSlots[_hoverIdx].Height), 4, Ui.WithAlpha(p.Accent1, 28));
+                        Rectangle bplot = Charts.BarsPlot(_barArea);
+                        int bslot = Math.Max(1, bplot.Width / 24);
+                        Ui.FillRound(g, new RectangleF(bplot.X + _hoverIdx * bslot, bplot.Y,
+                            bslot, bplot.Height), 4, Ui.WithAlpha(p.Accent1, 28));
                         Charts.Tooltip(g, bounds, cur,
                             _hoverIdx.ToString("D2") + ":00 - " + ((_hoverIdx + 1) % 24).ToString("D2") + ":00",
                             Charts.Number(Snap.Range.Hours[_hoverIdx]) + " 次", p);
@@ -327,6 +374,15 @@ namespace KeyInsight.UI.Pages
             Ui.FillRound(g, new RectangleF(r.X + 16, r.Y + 16, 4, 18), 2, accent);
             Ui.TextLeft(g, label, Ui.BodySmall, p.Muted, new Rectangle(r.X + 28, r.Y + 12, r.Width - 40, 24));
             Ui.TextLeft(g, value, Ui.CardValueSmall, p.Text, new Rectangle(r.X + 16, r.Y + 36, r.Width - 32, 28));
+        }
+
+        /// <summary>Screenshot-mode hover preview (tooltip styling verification).</summary>
+        public void PreviewHover(int kind, int idx)
+        {
+            _hoverKind = kind;
+            _hoverIdx = idx;
+            // 需要真实光标位置才能画 tooltip；截图模式下用图表区域中心模拟
+            Invalidate();
         }
 
         protected override void OnMouseDown(MouseEventArgs e)

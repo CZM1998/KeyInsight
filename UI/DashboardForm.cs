@@ -421,6 +421,13 @@ namespace KeyInsight.UI
             get { return _groupPages[_currentGroup].Length > 1; }
         }
 
+        /// <summary>Screenshot/debug hook: access a page instance without switching UI.</summary>
+        internal PageBase FindPageForPreview(int index)
+        {
+            if (_pages == null || index < 0 || index >= _pages.Length) return null;
+            return _pages[index];
+        }
+
         public void PreviewKeyboardHover(string label)
         {
             KeyboardPage page = _pages[1] as KeyboardPage;
