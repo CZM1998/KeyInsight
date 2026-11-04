@@ -238,6 +238,7 @@ namespace KeyInsight.Services.DeviceCenter
             try { snapshots.AddRange(
                 new KeyInsight.Adapters.Camera.CameraAdapter().EnumerateSnapshots()); } catch { }
             try { EnrichPrinters(snapshots); } catch { }
+            try { EnrichDigitizers(snapshots); } catch { }
             ApplySnapshots(snapshots);
             TrackDefaultAudioEndpoints();
         }
@@ -275,6 +276,46 @@ namespace KeyInsight.Services.DeviceCenter
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
             return a.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0
                 || b.IndexOf(a, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>
+        /// 数位板 HID 能力合并进 PnP 输入快照（方案 §9.4，PR-11）：
+        /// 按归一化实例键匹配；能力来自 HID 顶层集合与值能力（真实解析，非名称猜测）。
+        /// </summary>
+        private static void EnrichDigitizers(List<DeviceSnapshot> snapshots)
+        {
+            List<KeyInsight.Adapters.Input.DigitizerAdapter.DigitizerCaps> digitizers =
+                KeyInsight.Adapters.Input.DigitizerAdapter.Scan();
+            if (digitizers.Count == 0) return;
+            for (int i = 0; i < snapshots.Count; i++)
+            {
+                DeviceSnapshot s = snapshots[i];
+                if (s.Category != DeviceCategory.Input || string.IsNullOrEmpty(s.InstanceId))
+                {
+                    continue;
+                }
+                string key = KeyInsight.Adapters.Input.DigitizerAdapter.NormalizeInstanceId(
+                    s.InstanceId);
+                for (int k = 0; k < digitizers.Count; k++)
+                {
+                    KeyInsight.Adapters.Input.DigitizerAdapter.DigitizerCaps d = digitizers[k];
+                    if (!string.Equals(d.MatchKey, key, StringComparison.Ordinal)) continue;
+
+                    StringBuilder sb = new StringBuilder(s.AttributesJson ?? "{}");
+                    if (sb[sb.Length - 1] == '}') sb.Length -= 1;
+                    if (sb[sb.Length - 1] != '{') sb.Append(',');
+                    sb.Append("\"digitizerUsagePage\":13,\"digitizerUsage\":")
+                      .Append(d.Usage)
+                      .Append(",\"digitizerPressure\":").Append(d.Pressure ? 1 : 0)
+                      .Append(",\"digitizerTiltX\":").Append(d.TiltX ? 1 : 0)
+                      .Append(",\"digitizerTiltY\":").Append(d.TiltY ? 1 : 0)
+                      .Append(",\"digitizerInputReportLen\":").Append(d.InputReportLen)
+                      .Append(",\"digitizerBasis\":\"HID 顶层集合与值能力（hid.dll 解析）\"");
+                    if (sb[sb.Length - 1] != '}') sb.Append('}');
+                    s.AttributesJson = sb.ToString();
+                    break;
+                }
+            }
         }
 
         /// <summary>默认音频端点变化 → 事件（方案 §9.1/§10.3，不采集音频内容）。</summary>

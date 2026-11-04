@@ -42,6 +42,17 @@ namespace KeyInsight.Adapters.Camera
             new Guid("c459a2e8-3d2c-4e44-b132-fee5156c7bb0");           // MF_MT_FRAME_RATE
         private static Guid IidIMFMediaSource =
             new Guid("279a808d-aec7-40c8-9c6b-a6b492c78a66");           // IMFMediaSource
+        private static Guid MtMajorTypeVideo =
+            new Guid("73646976-0000-0010-8000-00aa00389b71");           // MFMediaType_Video (mfapi.h 3699)
+        private static Guid MtSubtypeRGB32 =
+            new Guid("00000016-0000-0010-8000-00aa00389b71");           // MFVideoFormat_RGB32 (D3DFMT_X8R8G8B8=22, mfapi.h 2248/d3d9types.h 1379)
+        private static Guid MtMajorType =
+            new Guid("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");           // MF_MT_MAJOR_TYPE (mfapi.h 2607)
+        private static Guid MtSubtype =
+            new Guid("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");           // MF_MT_SUBTYPE (mfapi.h 2611)
+
+        /// <summary>MF_SOURCE_READER_CURRENT_TYPE_INDEX（mfreadwrite.idl 333）。</summary>
+        internal const int ReaderCurrentTypeIndex = unchecked((int)0xFFFFFFFF);
 
         private const int MFSTARTUP_LITE = 0x1;
         private const int MF_VERSION_WIN7 = 0x20070;                    // (2<<16)|112
@@ -267,12 +278,295 @@ namespace KeyInsight.Adapters.Camera
                 }
                 sb.Append("],");
             }
-            sb.Append("\"previewTest\":\"未接入（用户主动功能，后续版本）\",");
+            sb.Append("\"previewTest\":\"已接入：设备详情页「预览测试」（用户主动启动）\",");
             sb.Append("\"privacy\":\"仅枚举身份与格式声明，不打开取流、不预览、不保存画面\",");
             sb.Append("\"symbolicLink\":\"").Append(
                 (cam.SymbolicLink ?? "").Replace("\\", "\\\\").Replace("\"", "'")).Append('"');
             sb.Append('}');
             return sb.ToString();
+        }
+
+        // —— 用户主动预览（方案 §9.3）：仅由「预览测试」按钮触发；退出即释放全部资源 ——
+
+        /// <summary>预览会话句柄。Dispose 释放 Reader + Source（ShutdownObject）+ MFShutdown。</summary>
+        public sealed class PreviewSession : IDisposable
+        {
+            internal IntPtr Reader;
+            internal IntPtr Activate;
+            internal object SourceUnknown;
+            internal int Width;
+            internal int Height;
+            public bool Ok { get { return Reader != IntPtr.Zero && Width > 0; } }
+
+            public void Dispose()
+            {
+                try
+                {
+                    if (Reader != IntPtr.Zero)
+                    {
+                        try
+                        {
+                            IMFSourceReaderPrefix r =
+                                (IMFSourceReaderPrefix)Marshal.GetObjectForIUnknown(Reader);
+                            r.Flush(0);
+                        }
+                        catch { }
+                        Marshal.Release(Reader);
+                        Reader = IntPtr.Zero;
+                    }
+                    if (Activate != IntPtr.Zero)
+                    {
+                        try
+                        {
+                            IMFActivatePrefix a =
+                                (IMFActivatePrefix)Marshal.GetObjectForIUnknown(Activate);
+                            a.ShutdownObject();
+                        }
+                        catch { }
+                        Marshal.Release(Activate);
+                        Activate = IntPtr.Zero;
+                    }
+                    if (SourceUnknown != null)
+                    {
+                        try { Marshal.ReleaseComObject(SourceUnknown); } catch { }
+                        SourceUnknown = null;
+                    }
+                    try { MFShutdown(); } catch { }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        /// <summary>
+        /// 按符号链接打开 RGB32 预览 Reader（同步模式）。失败返回 Ok=false 的会话（不抛出）。
+        /// 必须在调用方后台线程执行；调用前该线程应 CoInitializeEx（MTA）。
+        /// </summary>
+        public static PreviewSession OpenPreview(string symbolicLink)
+        {
+            PreviewSession session = new PreviewSession();
+            try
+            {
+                try { CoInitializeEx(IntPtr.Zero, 0x0); } catch { }
+                if (MFStartup(MF_VERSION_WIN7, MFSTARTUP_LITE) != 0) return session;
+
+                IntPtr store = IntPtr.Zero;
+                IntPtr activateArray = IntPtr.Zero;
+                try
+                {
+                    if (MFCreateAttributes(out store, 2) != 0 || store == IntPtr.Zero) return session;
+                    IMFAttributesFull attrs =
+                        (IMFAttributesFull)Marshal.GetObjectForIUnknown(store);
+                    Guid srcType = AttrSourceType;
+                    Guid vidcap = AttrSourceTypeVidcap;
+                    if (attrs.SetGUID(ref srcType, ref vidcap) != 0) return session;
+
+                    uint count = 0;
+                    if (MFEnumDeviceSources(store, out activateArray, out count) != 0) return session;
+
+                    string want = NormalizeLink(symbolicLink);
+                    IntPtr actPtr = IntPtr.Zero;
+                    for (int i = 0; i < count; i++)
+                    {
+                        IntPtr p = Marshal.ReadIntPtr(activateArray, i * IntPtr.Size);
+                        if (p == IntPtr.Zero) continue;
+                        IMFActivatePrefix a = (IMFActivatePrefix)Marshal.GetObjectForIUnknown(p);
+                        uint len;
+                        IntPtr linkPtr;
+                        if (a.GetAllocatedString(ref AttrSymbolicLink, out linkPtr, out len) == 0
+                            && linkPtr != IntPtr.Zero)
+                        {
+                            string link = Marshal.PtrToStringUni(linkPtr) ?? "";
+                            CoTaskMemFree(linkPtr);
+                            if (NormalizeLink(link) == want)
+                            {
+                                actPtr = p;
+                                break;
+                            }
+                        }
+                        Marshal.Release(p);
+                    }
+                    if (actPtr == IntPtr.Zero) return session;      // 未找到匹配摄像头
+
+                    session.Activate = actPtr;
+                    IMFActivatePrefix act =
+                        (IMFActivatePrefix)Marshal.GetObjectForIUnknown(actPtr);
+                    object srcUnknown;
+                    Guid iidSource = IidIMFMediaSource;
+                    if (act.ActivateObject(ref iidSource, out srcUnknown) != 0
+                        || srcUnknown == null)
+                    {
+                        return session;
+                    }
+                    session.SourceUnknown = srcUnknown;
+                    IntPtr srcPtr = Marshal.GetComInterfaceForObject(srcUnknown,
+                        typeof(IMFMediaSourceMinimal));
+                    try
+                    {
+                        if (MFCreateSourceReaderFromMediaSource(srcPtr, IntPtr.Zero,
+                            out session.Reader) != 0 || session.Reader == IntPtr.Zero)
+                        {
+                            session.Reader = IntPtr.Zero;
+                            return session;
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.Release(srcPtr);
+                    }
+
+                    // 输出格式 → RGB32（Source Reader 自动插入转换器）
+                    IntPtr mt;
+                    if (MFCreateMediaType(out mt) != 0 || mt == IntPtr.Zero) return session;
+                    try
+                    {
+                        IMFAttributesFull mtAttrs =
+                            (IMFAttributesFull)Marshal.GetObjectForIUnknown(mt);
+                        Guid video = MtMajorTypeVideo;
+                        Guid rgb32 = MtSubtypeRGB32;
+                        if (mtAttrs.SetGUID(ref MtMajorType, ref video) != 0) return session;
+                        if (mtAttrs.SetGUID(ref MtSubtype, ref rgb32) != 0) return session;
+                        IMFSourceReaderPrefix reader =
+                            (IMFSourceReaderPrefix)Marshal.GetObjectForIUnknown(session.Reader);
+                        if (reader.SetCurrentMediaType(0, IntPtr.Zero, mt) != 0) return session;
+                    }
+                    finally
+                    {
+                        Marshal.Release(mt);
+                    }
+
+                    // 当前类型 → 帧尺寸（FRAME_SIZE HI32=Width LO32=Height）
+                    IMFSourceReaderPrefix r2 =
+                        (IMFSourceReaderPrefix)Marshal.GetObjectForIUnknown(session.Reader);
+                    IntPtr curMt;
+                    if (r2.GetNativeMediaType(0, ReaderCurrentTypeIndex, out curMt) == 0
+                        && curMt != IntPtr.Zero)
+                    {
+                        try
+                        {
+                            IMFAttributesPrefix mtAttrs =
+                                (IMFAttributesPrefix)Marshal.GetObjectForIUnknown(curMt);
+                            ulong size;
+                            if (mtAttrs.GetUINT64(ref MtFrameSize, out size) == 0)
+                            {
+                                session.Width = (int)(size >> 32);
+                                session.Height = (int)(size & 0xFFFFFFFF);
+                            }
+                        }
+                        finally
+                        {
+                            Marshal.Release(curMt);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (activateArray != IntPtr.Zero) CoTaskMemFree(activateArray);
+                    if (store != IntPtr.Zero) Marshal.Release(store);
+                }
+            }
+            catch
+            {
+            }
+            return session;
+        }
+
+        /// <summary>读取一帧 RGB32 并解码为自上而下 Bitmap；失败/取消返回 null。预览线程调用。</summary>
+        public static System.Drawing.Bitmap ReadPreviewFrame(IntPtr reader, int width, int height)
+        {
+            if (reader == IntPtr.Zero || width <= 0 || height <= 0) return null;
+            try
+            {
+                IMFSourceReaderPrefix reader2 =
+                    (IMFSourceReaderPrefix)Marshal.GetObjectForIUnknown(reader);
+                uint stream, flags;
+                long timestamp;
+                IntPtr samplePtr;
+                if (reader2.ReadSample(0, 0, out stream, out flags, out timestamp,
+                    out samplePtr) != 0 || samplePtr == IntPtr.Zero)
+                {
+                    return null;        // EOS / gap / 失败：本帧跳过
+                }
+                try
+                {
+                    IMFSamplePrefix sample =
+                        (IMFSamplePrefix)Marshal.GetObjectForIUnknown(samplePtr);
+                    IntPtr bufPtr;
+                    if (sample.ConvertToContiguousBuffer(out bufPtr) != 0 || bufPtr == IntPtr.Zero)
+                    {
+                        return null;
+                    }
+                    try
+                    {
+                        IMFMediaBufferPrefix buffer =
+                            (IMFMediaBufferPrefix)Marshal.GetObjectForIUnknown(bufPtr);
+                        IntPtr data;
+                        uint maxLen, curLen;
+                        if (buffer.Lock(out data, out maxLen, out curLen) != 0
+                            || data == IntPtr.Zero)
+                        {
+                            return null;
+                        }
+                        try
+                        {
+                            int srcStride = width * 4;
+                            long needed = (long)srcStride * height;
+                            if (curLen < (ulong)needed) return null;
+
+                            byte[] raw = new byte[(int)curLen];
+                            Marshal.Copy(data, raw, 0, (int)curLen);
+
+                            System.Drawing.Bitmap bmp =
+                                new System.Drawing.Bitmap(width, height,
+                                    System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+                            System.Drawing.Imaging.BitmapData bd = bmp.LockBits(
+                                new System.Drawing.Rectangle(0, 0, width, height),
+                                System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                                System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+                            try
+                            {
+                                // MF RGB32 帧为自下而上（BI_RGB 负高约定）→ 行序翻转
+                                for (int dstRow = 0; dstRow < height; dstRow++)
+                                {
+                                    int srcRow = height - 1 - dstRow;
+                                    System.Runtime.InteropServices.Marshal.Copy(raw,
+                                        srcRow * srcStride,
+                                        new IntPtr(bd.Scan0.ToInt64() + dstRow * bd.Stride),
+                                        srcStride);
+                                }
+                            }
+                            finally
+                            {
+                                bmp.UnlockBits(bd);
+                            }
+                            return bmp;
+                        }
+                        finally
+                        {
+                            try { buffer.Unlock(); } catch { }
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.Release(bufPtr);
+                    }
+                }
+                finally
+                {
+                    Marshal.Release(samplePtr);
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string NormalizeLink(string link)
+        {
+            string k = (link ?? "").Trim().ToLowerInvariant();
+            return k.Replace('/', '\\');
         }
 
         private static string StableTail(string text, int fallback)
@@ -379,7 +673,7 @@ namespace KeyInsight.Adapters.Camera
             int DetachObject();                                                            // 29
         }
 
-        /// <summary>IMFSourceReader 槽 1-3（mfreadwrite.idl 361-397 行序）。</summary>
+        /// <summary>IMFSourceReader 槽 1-8（mfreadwrite.idl 361-536 行序）。</summary>
         [ComImport, Guid("70ae66f2-c809-4e4f-8915-bdcb406b7993"),
          InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IMFSourceReaderPrefix
@@ -387,6 +681,12 @@ namespace KeyInsight.Adapters.Camera
             int GetStreamSelection(int streamIndex, out int selected);                     // 1
             int SetStreamSelection(int streamIndex, int selected);                         // 2
             int GetNativeMediaType(int streamIndex, int mediaTypeIndex, out IntPtr type);  // 3
+            int GetCurrentMediaType(int streamIndex, out IntPtr type);                     // 4
+            int SetCurrentMediaType(int streamIndex, IntPtr reserved, IntPtr mediaType);   // 5
+            int SetCurrentPosition(ref Guid format, IntPtr position);                      // 6
+            int ReadSample(int streamIndex, int controlFlags, out uint actualStream,
+                out uint streamFlags, out long timestamp, out IntPtr sample);              // 7
+            int Flush(int streamIndex);                                                    // 8
         }
 
         /// <summary>IMFMediaSource 最小标记（QI 用；不调用其方法）。</summary>
@@ -394,6 +694,64 @@ namespace KeyInsight.Adapters.Camera
          InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IMFMediaSourceMinimal
         {
+        }
+
+        /// <summary>IMFMediaBuffer 4 槽（mfobjects.idl 1025-1120 行序）。</summary>
+        [ComImport, Guid("045fa593-8799-42b8-bc8d-8968c6453507"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMFMediaBufferPrefix
+        {
+            int Lock(out IntPtr data, out uint maxLength, out uint currentLength);   // 1
+            int Unlock();                                                             // 2
+            int GetCurrentLength(out uint currentLength);                             // 3
+            int GetMaxLength(out uint maxLength);                                     // 4
+        }
+
+        /// <summary>
+        /// IMFSample = IMFAttributes 26 槽 + 12 槽（mfobjects.idl 1168-1355 行序）；
+        /// 本声明只用 ConvertToContiguousBuffer = 槽 35。
+        /// </summary>
+        [ComImport, Guid("c40a00f2-b93a-4d80-ae8c-5a1c634f58e4"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMFSamplePrefix
+        {
+            // IMFAttributes 1-26（同 IMFAttributesFull 顺序）
+            int GetItem(ref Guid key, IntPtr value);
+            int GetItemType(ref Guid key, out int type);
+            int CompareItem(ref Guid key, IntPtr value, out int same);
+            int Compare(IntPtr other, int matchType, out int result);
+            int GetUINT32(ref Guid key, out uint value);
+            int GetUINT64(ref Guid key, out ulong value);
+            int GetGUID(ref Guid key, out Guid value);
+            int GetStringLength(ref Guid key, out uint length);
+            int GetString(ref Guid key, IntPtr buffer, uint bufSize, out uint length);
+            int GetAllocatedString(ref Guid key, out IntPtr value, out uint length);
+            int GetBlobSize(ref Guid key, out uint size);
+            int GetBlob(ref Guid key, IntPtr buffer, uint bufSize, out uint length);
+            int GetAllocatedBlob(ref Guid key, out IntPtr buffer, out uint size);
+            int SetItem(ref Guid key, IntPtr value);
+            int DeleteItem(ref Guid key);
+            int DeleteAllItems();
+            int SetUINT32(ref Guid key, uint value);
+            int SetUINT64(ref Guid key, ulong value);
+            int SetGUID(ref Guid key, ref Guid value);
+            int SetString(ref Guid key, IntPtr value);
+            int SetBlob(ref Guid key, IntPtr buffer, uint size);
+            int SetUnknown(ref Guid key, [MarshalAs(UnmanagedType.IUnknown)] object obj);
+            int LockStore();
+            int UnlockStore();
+            int GetCount(out uint count);
+            int GetItemByIndex(int index, out Guid key, IntPtr value);
+            // IMFSample 27-35（1156 起行序）
+            int GetSampleFlags(out uint flags);                                        // 27
+            int SetSampleFlags(uint flags);                                            // 28
+            int GetSampleTime(out long time);                                          // 29
+            int SetSampleTime(long time);                                              // 30
+            int GetSampleDuration(out long duration);                                  // 31
+            int SetSampleDuration(long duration);                                      // 32
+            int GetBufferCount(out uint count);                                        // 33
+            int GetBufferByIndex(int index, out IntPtr buffer);                        // 34
+            int ConvertToContiguousBuffer(out IntPtr buffer);                          // 35
         }
 
         // —— MF API 导入（mfplat.dll / mfreadwrite.dll） ——
@@ -406,6 +764,9 @@ namespace KeyInsight.Adapters.Camera
 
         [DllImport("mfplat.dll")]
         private static extern int MFCreateAttributes(out IntPtr attributes, uint initialSize);
+
+        [DllImport("mfplat.dll")]
+        private static extern int MFCreateMediaType(out IntPtr mediaType);
 
         [DllImport("mfplat.dll")]
         private static extern int MFEnumDeviceSources(IntPtr attributes,

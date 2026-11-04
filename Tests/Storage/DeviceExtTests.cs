@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using KeyInsight.Adapters.Camera;
 using KeyInsight.Adapters.Display;
@@ -19,6 +20,8 @@ namespace KeyInsight.Tests.Storage
             TestRegistry.Add("Storage", "EXT001_BrightnessQuerySmoke", EXT001);
             TestRegistry.Add("Storage", "EXT002_CameraEnumerateSmoke", EXT002);
             TestRegistry.Add("Storage", "EXT003_BrandSvgAssets", EXT003);
+            TestRegistry.Add("Storage", "EXT004_CameraPreviewSmoke", EXT004);
+            TestRegistry.Add("Storage", "EXT005_DigitizerScanSmoke", EXT005);
         }
 
         private static void EXT001()
@@ -65,6 +68,45 @@ namespace KeyInsight.Tests.Storage
             // 快照映射不抛出
             var snapshots = adapter.Enumerate();
             Check.True(snapshots != null, "snapshot mapping never throws");
+        }
+
+        private static void EXT004()
+        {
+            // 不存在的符号链接：会话必须安全返回 Ok=false，绝不抛出
+            CameraAdapter.PreviewSession bad = CameraAdapter.OpenPreview(
+                "\\\\?\\hid#camera_not_exist#none");
+            Check.True(bad != null, "session never null");
+            Check.True(!bad.Ok, "bogus link must not open");
+            bad.Dispose();
+
+            // ReadPreviewFrame 空参数防御
+            Check.True(CameraAdapter.ReadPreviewFrame(IntPtr.Zero, 640, 480) == null,
+                "null reader returns null frame");
+            CameraAdapter.PreviewSession dummy = new CameraAdapter.PreviewSession();
+            Check.True(CameraAdapter.ReadPreviewFrame(IntPtr.Zero, 0, 0) == null,
+                "invalid dims return null frame");
+            dummy.Dispose();
+        }
+
+        private static void EXT005()
+        {
+            // 数位板 HID 扫描冒烟：永不抛出；条目字段完备（识别到才有 MatchKey/报告长度）
+            List<KeyInsight.Adapters.Input.DigitizerAdapter.DigitizerCaps> found =
+                KeyInsight.Adapters.Input.DigitizerAdapter.Scan();
+            Check.True(found != null, "scan result never null");
+            for (int i = 0; i < found.Count; i++)
+            {
+                KeyInsight.Adapters.Input.DigitizerAdapter.DigitizerCaps d = found[i];
+                Check.True(!string.IsNullOrEmpty(d.MatchKey), "match key present");
+                Check.True(d.InputReportLen > 0, "input report length sane");
+            }
+            // 归一化键稳定
+            Check.Equal(
+                KeyInsight.Adapters.Input.DigitizerAdapter.NormalizeInstanceKey(
+                    "\\\\?\\hid#vid_1234&pid_5678&mi_00#7&abc&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"),
+                KeyInsight.Adapters.Input.DigitizerAdapter.NormalizeInstanceId(
+                    "HID\\VID_1234&PID_5678&MI_00\\7&ABC&0&0000"),
+                "interface path and instance id normalize to same key");
         }
 
         private static void EXT003()

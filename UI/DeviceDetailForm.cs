@@ -246,6 +246,11 @@ namespace KeyInsight.UI
             }
         }
 
+        private static string YesNo(string flag)
+        {
+            return "1".Equals(flag) ? "有" : "未读取";
+        }
+
         private void AddCap(string name, string op, string source)
         {
             Label l = new Label();
@@ -420,6 +425,23 @@ namespace KeyInsight.UI
                 }
                 catch { }
             });
+        }
+
+        private void LaunchCameraPreview()
+        {
+            string link = KeyInsight.Core.Devices.DeviceIdentityResolver.JsonField(
+                _record.AttributesJson, "symbolicLink");
+            if (string.IsNullOrEmpty(link))
+            {
+                Dialogs.Error(this, "无法打开预览",
+                    "该摄像头档案缺少符号链接（可能由旧版本扫描生成）。请先在设备中心重新扫描。");
+                return;
+            }
+            using (CameraPreviewForm f = new CameraPreviewForm(link, _record.Name))
+            {
+                f.ShowDialog(this);
+            }
+            Invalidate();
         }
 
         private void SaveNote()
