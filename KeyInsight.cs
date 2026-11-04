@@ -137,6 +137,8 @@ namespace KeyInsight
                 string dataDir = DataPathResolver.ResolveDataRoot(AppDomain.CurrentDomain.BaseDirectory);
                 StatsEngine stats = new StatsEngine(dataDir, "KeyInsight");
                 ForegroundTracker.Start();
+                // 应用活跃时长（前台窗口估算；空闲不计入）
+                AppTimeTracker.Start(dataDir);
 
                 StatsEngineSink sink = new StatsEngineSink(stats);
                 DebounceHook hook = new DebounceHook(cfg, sink);
@@ -190,6 +192,7 @@ namespace KeyInsight
                     rawInput.Dispose();
                     stats.Dispose();
                     ForegroundTracker.Stop();
+            AppTimeTracker.Stop();
                 }
             }
             return 0;

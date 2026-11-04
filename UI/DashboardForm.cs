@@ -535,7 +535,6 @@ namespace KeyInsight.UI
             }
             Ui.TextLeft(g, "KeyInsight", Ui.BrandTitle, p.Text,
                 new Rectangle(58, 8, 220, 26));
-            Ui.TextLeft(g, "键盘洞察 · 按键统计与防抖", Ui.Label, p.Muted, new Rectangle(58, 31, 260, 18));
 
             DrawStatus(g, p);
             DrawGroupTabs(g, p);
@@ -543,8 +542,7 @@ namespace KeyInsight.UI
             DrawWindowButtons(g, p);
             DrawNav(g, p);
 
-            Ui.TextLeft(g, "本地数据 · 不上传", Ui.Label, p.Dim, new Rectangle(18, ClientSize.Height - 44, 160, 18));
-            Ui.TextLeft(g, "v" + AppInfo.Version, Ui.Label, p.Dim, new Rectangle(18, ClientSize.Height - 26, 80, 18));
+            Ui.TextLeft(g, "v" + AppInfo.Version, Ui.Label, p.Dim, new Rectangle(18, ClientSize.Height - 22, 80, 18));
 
             using (Pen pen = new Pen(p.BorderStrong, 1f))
             {

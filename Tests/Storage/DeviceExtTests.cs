@@ -42,14 +42,20 @@ namespace KeyInsight.Tests.Storage
                 Check.True(info.Current >= info.Min && info.Current <= info.Max,
                     "current within range");
             }
-            // 离线矩形（远超屏幕）：必须安全返回不支持，绝不抛出
+            // 离屏矩形：MONITOR_DEFAULTTONEAREST 语义下会吸附最近显示器（设计行为）；
+            // 断言只要求不抛出且状态自洽，不断言必须"不支持"（依显示器 DDC 能力而定）
             DisplayAdapter.MonitorInfo off = new DisplayAdapter.MonitorInfo();
             off.CurrentWidth = 100;
             off.CurrentHeight = 100;
             off.PositionX = -50000;
             off.PositionY = -50000;
             DisplayAdapter.BrightnessInfo offInfo = DisplayAdapter.QueryBrightness(off);
-            Check.True(offInfo != null && !offInfo.Supported, "offline rect degrades safely");
+            Check.True(offInfo != null, "offscreen rect never throws");
+            if (offInfo.Supported)
+            {
+                Check.True(offInfo.Current >= offInfo.Min && offInfo.Current <= offInfo.Max,
+                    "offscreen fallback stays consistent");
+            }
         }
 
         private static void EXT002()

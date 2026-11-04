@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 using KeyInsight.Stats;
@@ -7,12 +8,35 @@ namespace KeyInsight.UI.Pages
 {
     public sealed class TimePage : PageBase
     {
+        private int _hoverKind;          // 0 无 1 小时柱 2 热力单元 3 趋势点 4 应用行
+        private int _hoverIdx = -1;
+        private readonly Rectangle[] _barSlots = new Rectangle[24];
+        private readonly Rectangle[] _heatCells = new Rectangle[168];
+        private readonly Rectangle[] _trendSlots = new Rectangle[30];
+        private readonly List<AppRow> _appRows = new List<AppRow>();
+        private long _appTotalSeconds;
+
+        private sealed class AppRow
+        {
+            public Rectangle Rect;
+            public string Name;
+            public long Seconds;
+        }
+
         public override string Title { get { return "时间分析"; } }
-        public override string Subtitle { get { return "按键在一天、一周和更长周期里的分布"; } }
+        public override string Subtitle { get { return "按键分布与应用活跃时长（前台窗口估算，空闲不计入）"; } }
+
+        // 4 KPI + 两图 + 趋势/快捷键 + 应用活跃时长
+        protected override int MinContentHeight { get { return 860; } }
 
         public TimePage()
         {
             Range = RangeKind.Week;
+        }
+
+        private Dictionary<string, long> AppTimeForRange()
+        {
+            return AppTimeTracker.GetRange(RangeStart, RangeEnd);
         }
 
         protected override void Draw(Graphics g)
@@ -28,11 +52,15 @@ namespace KeyInsight.UI.Pages
             int peak = PeakHour(Snap.Range.Hours);
             double avgDay = Snap.Range.Total / (double)Math.Max(1, Snap.Range.ActiveDays);
 
+            Dictionary<string, long> appTime = AppTimeForRange();
+            _appTotalSeconds = AppTimeTracker.TotalSeconds(appTime);
+
             SmallCard(g, new Rectangle(0, y, cardW, smallH), p, "范围按键", Charts.Number(Snap.Range.Total), p.Accent1);
             SmallCard(g, new Rectangle(cardW + gap, y, cardW, smallH), p, "综合活跃分钟",
                 Charts.Number(Snap.CombinedActiveMinutes), p.Accent2);
             SmallCard(g, new Rectangle((cardW + gap) * 2, y, cardW, smallH), p, "最活跃时段", HourRange(peak), p.Accent3);
-            SmallCard(g, new Rectangle((cardW + gap) * 3, y, cardW, smallH), p, "日均按键", Charts.Number(Math.Round(avgDay)), p.Info);
+            SmallCard(g, new Rectangle((cardW + gap) * 3, y, cardW, smallH), p, "应用活跃时长",
+                FormatDuration(_appTotalSeconds), p.Info);
 
             // PR-3：Standard 宽度把两张图并排，趋势全宽底部；Compact 宽度堆叠。
             bool twoCol = ContentW >= 860;
@@ -45,40 +73,227 @@ namespace KeyInsight.UI.Pages
                 int chartH = 196;
                 int chartW = (ContentW - gap) / 2;
                 SectionCard(g, new Rectangle(0, y1, chartW, chartH), "24 小时分布", "按小时累计的按键次数");
-                Charts.DrawBars24(g, new Rectangle(12, y1 + 58, chartW - 24, chartH - 68), Snap.Range.Hours, p);
+                Charts.DrawBars24(g, new Rectangle(12, y1 + 58, chartW - 24, chartH - 68),
+                    Snap.Range.Hours, p, _barSlots);
                 SectionCard(g, new Rectangle(chartW + gap, y1, ContentW - chartW - gap, chartH),
                     "星期 × 小时热力", "颜色越深代表该时段越活跃");
                 Charts.DrawHeat7x24(g, new Rectangle(chartW + gap + 16, y1 + 58,
-                    ContentW - chartW - gap - 32, chartH - 68), Snap.Range.WeekdayHour, p);
+                    ContentW - chartW - gap - 32, chartH - 68), Snap.Range.WeekdayHour, p, _heatCells);
 
                 int y3 = y1 + chartH + gap;
-                int trendH = ContentH - y3;
-                if (trendH < 120) trendH = 120;
+                const int trendH = 200;
                 SectionCard(g, new Rectangle(0, y3, trendLeftW, trendH), "最近 30 天趋势", "全部应用，不受上方范围影响");
-                Charts.DrawTrend(g, new Rectangle(12, y3 + 56, trendLeftW - 24, trendH - 62), Snap.Last30Days, p);
+                Charts.DrawTrend(g, new Rectangle(12, y3 + 56, trendLeftW - 24, trendH - 62),
+                    Snap.Last30Days, p, _trendSlots);
                 SectionCard(g, new Rectangle(trendLeftW + gap, y3, rightW, trendH), "常用快捷键",
                     "仅聚合计数（Ctrl/Alt/Win 组合），不记录按键序列");
                 DrawShortcuts(g, new Rectangle(trendLeftW + gap + 18, y3 + 56, rightW - 36, trendH - 64), p);
+
+                int y4 = y3 + trendH + gap;
+                int appH = ContentH - y4 - 16;
+                if (appH < 170) appH = 170;
+                DrawAppTime(g, new Rectangle(0, y4, ContentW, appH), appTime, p);
+            }
+            else
+            {
+                int hourH = 150;
+                SectionCard(g, new Rectangle(0, y1, ContentW, hourH), "24 小时分布", "按小时累计的按键次数");
+                Charts.DrawBars24(g, new Rectangle(12, y1 + 58, ContentW - 24, hourH - 68),
+                    Snap.Range.Hours, p, _barSlots);
+
+                int y2 = y1 + hourH + gap;
+                int heatH = 140;
+                SectionCard(g, new Rectangle(0, y2, ContentW, heatH), "星期 × 小时热力", "颜色越深代表该时段越活跃");
+                Charts.DrawHeat7x24(g, new Rectangle(16, y2 + 58, ContentW - 32, heatH - 68),
+                    Snap.Range.WeekdayHour, p, _heatCells);
+
+                int y3 = y2 + heatH + gap;
+                int trendHc = 190;
+                SectionCard(g, new Rectangle(0, y3, trendLeftW, trendHc), "最近 30 天趋势", "全部应用，不受上方范围影响");
+                Charts.DrawTrend(g, new Rectangle(12, y3 + 56, trendLeftW - 24, trendHc - 62),
+                    Snap.Last30Days, p, _trendSlots);
+                SectionCard(g, new Rectangle(trendLeftW + gap, y3, rightW, trendHc), "常用快捷键",
+                    "仅聚合计数（Ctrl/Alt/Win 组合），不记录按键序列");
+                DrawShortcuts(g, new Rectangle(trendLeftW + gap + 18, y3 + 56, rightW - 36, trendHc - 64), p);
+
+                int y4c = y3 + trendHc + gap;
+                int appHc = ContentH - y4c - 16;
+                if (appHc < 170) appHc = 170;
+                DrawAppTime(g, new Rectangle(0, y4c, ContentW, appHc), appTime, p);
+            }
+
+            DrawHoverTooltip(g, p);
+        }
+
+        // ---------------------------------------------------------------- 应用活跃时长
+
+        private void DrawAppTime(Graphics g, Rectangle card, Dictionary<string, long> appTime, Palette p)
+        {
+            _appRows.Clear();
+            long total = _appTotalSeconds;
+            SectionCard(g, card, "应用活跃时长",
+                total > 0
+                    ? "前台窗口活跃时长估算 · 共 " + FormatDuration(total) + " · 空闲 ≥2 分钟不计入"
+                    : "尚未开始统计 —— 保持应用运行，前台窗口使用时长会自动累计");
+
+            if (total <= 0 || appTime.Count == 0)
+            {
+                Ui.TextCenter(g, "还没有应用活跃数据（空闲时间不计入）", Ui.BodySmall, p.Dim,
+                    new Rectangle(card.X, card.Y + 80, card.Width, 40));
                 return;
             }
 
-            int hourH = 150;
-            SectionCard(g, new Rectangle(0, y1, ContentW, hourH), "24 小时分布", "按小时累计的按键次数");
-            Charts.DrawBars24(g, new Rectangle(12, y1 + 58, ContentW - 24, hourH - 68), Snap.Range.Hours, p);
+            List<KeyValuePair<string, long>> top = AppTimeTracker.TopApps(appTime, 6);
+            int x = card.X + 20;
+            int w = card.Width - 40;
+            int rowH = Math.Min(36, Math.Max(26, (card.Height - 66) / Math.Max(1, top.Count)));
+            long max = top.Count > 0 ? top[0].Value : 1;
+            if (max < 1) max = 1;
+            int barLeft = x + 190;
+            int barRight = x + w - 190;
 
-            int y2 = y1 + hourH + gap;
-            int heatH = 140;
-            SectionCard(g, new Rectangle(0, y2, ContentW, heatH), "星期 × 小时热力", "颜色越深代表该时段越活跃");
-            Charts.DrawHeat7x24(g, new Rectangle(16, y2 + 58, ContentW - 32, heatH - 68), Snap.Range.WeekdayHour, p);
+            for (int i = 0; i < top.Count; i++)
+            {
+                int ry = card.Y + 54 + i * rowH;
+                Rectangle rowRect = new Rectangle(x, ry, w, rowH - 4);
+                AppRow row = new AppRow();
+                row.Rect = rowRect;
+                row.Name = top[i].Key;
+                row.Seconds = top[i].Value;
+                _appRows.Add(row);
 
-            int y3c = y2 + heatH + gap;
-            int trendHc = ContentH - y3c;
-            if (trendHc < 120) trendHc = 120;
-            SectionCard(g, new Rectangle(0, y3c, trendLeftW, trendHc), "最近 30 天趋势", "全部应用，不受上方范围影响");
-            Charts.DrawTrend(g, new Rectangle(12, y3c + 56, trendLeftW - 24, trendHc - 62), Snap.Last30Days, p);
-            SectionCard(g, new Rectangle(trendLeftW + gap, y3c, rightW, trendHc), "常用快捷键",
-                "仅聚合计数（Ctrl/Alt/Win 组合），不记录按键序列");
-            DrawShortcuts(g, new Rectangle(trendLeftW + gap + 18, y3c + 56, rightW - 36, trendHc - 64), p);
+                bool hover = _hoverKind == 4 && _hoverIdx == i;
+                if (hover) Ui.FillRound(g, rowRect, 7, p.Hover);
+
+                Ui.TextLeft(g, (i + 1).ToString(), Ui.Mono, p.Dim,
+                    new Rectangle(x, ry, 22, rowH - 4));
+                Ui.TextLeftEllipsis(g, AppNames.Display(top[i].Key), Ui.BodySmall, p.Text,
+                    new Rectangle(x + 24, ry, 160, rowH - 4));
+
+                int barW = (int)((barRight - barLeft) * (top[i].Value / (double)max));
+                if (barW < 3) barW = 3;
+                RectangleF track = new RectangleF(barLeft, ry + (rowH - 4) / 2f - 5, barRight - barLeft, 10);
+                Ui.FillRound(g, track, 5, p.CardAlt);
+                Ui.GradientRound(g, new RectangleF(barLeft, ry + (rowH - 4) / 2f - 5, barW, 10),
+                    5, p.Accent2, p.Accent1, 0f);
+
+                string dur = FormatDuration(top[i].Value);
+                double pct = top[i].Value * 100.0 / total;
+                Ui.TextRight(g, dur, Ui.Label, p.Text,
+                    new Rectangle(barRight + 8, ry, 96, rowH - 4));
+                Ui.TextRight(g, pct.ToString("F1") + "%", Ui.Label, p.Muted,
+                    new Rectangle(barRight + 108, ry, 70, rowH - 4));
+            }
+        }
+
+        private static string FormatDuration(long seconds)
+        {
+            if (seconds <= 0) return "0 分";
+            if (seconds < 60) return "<1 分";
+            long minutes = seconds / 60;
+            if (minutes < 60) return minutes + " 分";
+            return (minutes / 60) + " 小时 " + (minutes % 60) + " 分";
+        }
+
+        // ---------------------------------------------------------------- 悬停数据检查
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            Point pt = ToContent(e.Location);
+            int kind = 0, idx = -1;
+            for (int i = 0; i < _barSlots.Length; i++)
+            {
+                if (_barSlots[i].Width > 0 && _barSlots[i].Contains(pt)) { kind = 1; idx = i; break; }
+            }
+            if (kind == 0)
+            {
+                for (int i = 0; i < _heatCells.Length; i++)
+                {
+                    if (_heatCells[i].Width > 0 && _heatCells[i].Contains(pt)) { kind = 2; idx = i; break; }
+                }
+            }
+            if (kind == 0)
+            {
+                for (int i = 0; i < _trendSlots.Length; i++)
+                {
+                    if (_trendSlots[i].Width > 0 && _trendSlots[i].Contains(pt)) { kind = 3; idx = i; break; }
+                }
+            }
+            if (kind == 0)
+            {
+                for (int i = 0; i < _appRows.Count; i++)
+                {
+                    if (_appRows[i].Rect.Contains(pt)) { kind = 4; idx = i; break; }
+                }
+            }
+            if (kind != _hoverKind || idx != _hoverIdx)
+            {
+                _hoverKind = kind;
+                _hoverIdx = idx;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hoverKind != 0)
+            {
+                _hoverKind = 0;
+                _hoverIdx = -1;
+                Invalidate();
+            }
+        }
+
+        private void DrawHoverTooltip(Graphics g, Palette p)
+        {
+            if (_hoverKind == 0 || _hoverIdx < 0) return;
+            Point cur = CursorToContent();
+            Rectangle bounds = new Rectangle(0, 0, ContentW, ContentH);
+            switch (_hoverKind)
+            {
+                case 1:
+                    if (_hoverIdx < _barSlots.Length)
+                    {
+                        Ui.FillRound(g, new RectangleF(_barSlots[_hoverIdx].X,
+                            _barSlots[_hoverIdx].Y, _barSlots[_hoverIdx].Width,
+                            _barSlots[_hoverIdx].Height), 4, Ui.WithAlpha(p.Accent1, 28));
+                        Charts.Tooltip(g, bounds, cur,
+                            _hoverIdx.ToString("D2") + ":00 - " + ((_hoverIdx + 1) % 24).ToString("D2") + ":00",
+                            Charts.Number(Snap.Range.Hours[_hoverIdx]) + " 次", p);
+                    }
+                    break;
+                case 2:
+                    if (_hoverIdx < 168)
+                    {
+                        int d = _hoverIdx / 24;
+                        int h = _hoverIdx % 24;
+                        string[] days = new string[] { "周一", "周二", "周三", "周四", "周五", "周六", "周日" };
+                        Charts.Tooltip(g, bounds, cur, days[d] + " " + h.ToString("D2") + ":00",
+                            Charts.Number(Snap.Range.WeekdayHour[d, h]) + " 次", p);
+                    }
+                    break;
+                case 3:
+                    if (_hoverIdx < Snap.Last30Days.Length)
+                    {
+                        long v = Snap.Last30Days[_hoverIdx];
+                        int total = Snap.Last30Days.Length;
+                        DateTime date = DateTime.Today.AddDays(-(total - 1 - _hoverIdx));
+                        Charts.Tooltip(g, bounds, cur, date.ToString("MM-dd") + "（趋势）",
+                            Charts.Number(v) + " 次", p);
+                    }
+                    break;
+                case 4:
+                    if (_hoverIdx < _appRows.Count)
+                    {
+                        AppRow r = _appRows[_hoverIdx];
+                        double pct = _appTotalSeconds > 0 ? r.Seconds * 100.0 / _appTotalSeconds : 0;
+                        Charts.Tooltip(g, bounds, cur, AppNames.Display(r.Name),
+                            "时长 " + FormatDuration(r.Seconds) + " · 占比 " + pct.ToString("F1") + "%", p);
+                    }
+                    break;
+            }
         }
 
         private void DrawShortcuts(Graphics g, Rectangle r, Palette p)

@@ -9,6 +9,8 @@ namespace KeyInsight.UI.Pages
     {
         private List<RankRow> _topKeys = new List<RankRow>();
         private List<RankRow> _topApps = new List<RankRow>();
+        private readonly Rectangle[] _barSlots = new Rectangle[24];
+        private int _hoverHour = -1;
 
         public override void SetSnapshot(StatsSnapshot s)
         {
@@ -61,8 +63,9 @@ namespace KeyInsight.UI.Pages
             Rectangle recentCard = new Rectangle(0, top + rowH + gap, leftW, ContentH - (top + rowH + gap));
             Rectangle appCard = new Rectangle(leftW + gap, top + rowH + gap, rightW, ContentH - (top + rowH + gap));
 
-            SectionCard(g, hourCard, "今日活跃度（24 小时）", "每个小时的按键次数");
-            Charts.DrawBars24(g, new Rectangle(hourCard.X + 12, hourCard.Y + 58, hourCard.Width - 24, hourCard.Height - 70), Snap.Today.Hours, p);
+            SectionCard(g, hourCard, "今日活跃度（24 小时）", "每个小时的按键次数（悬停查看精确值）");
+            Charts.DrawBars24(g, new Rectangle(hourCard.X + 12, hourCard.Y + 58, hourCard.Width - 24, hourCard.Height - 70), Snap.Today.Hours, p, _barSlots);
+            DrawBarTooltip(g, p);
 
             SectionCard(g, keyCard, "最常用按键", "今日 Top 8");
             if (_topKeys.Count == 0) Ui.TextCenter(g, "今天还没有按键数据", Ui.BodySmall, p.Dim,
@@ -76,6 +79,44 @@ namespace KeyInsight.UI.Pages
             if (_topApps.Count == 0) Ui.TextCenter(g, "今天还没有应用数据", Ui.BodySmall, p.Dim,
                 new Rectangle(appCard.X + 18, appCard.Y + 80, appCard.Width - 36, 40));
             else Charts.DrawRankList(g, new Rectangle(appCard.X + 18, appCard.Y + 58, appCard.Width - 36, appCard.Height - 70), _topApps, p, Ui.BodySmall);
+        }
+
+        protected override void OnMouseMove(System.Windows.Forms.MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            Point pt = ToContent(e.Location);
+            int hour = -1;
+            for (int i = 0; i < _barSlots.Length; i++)
+            {
+                if (_barSlots[i].Width > 0 && _barSlots[i].Contains(pt)) { hour = i; break; }
+            }
+            if (hour != _hoverHour)
+            {
+                _hoverHour = hour;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hoverHour != -1)
+            {
+                _hoverHour = -1;
+                Invalidate();
+            }
+        }
+
+        private void DrawBarTooltip(Graphics g, Palette p)
+        {
+            if (_hoverHour < 0 || _hoverHour >= 24) return;
+            Point cur = CursorToContent();
+            Ui.FillRound(g, new RectangleF(_barSlots[_hoverHour].X, _barSlots[_hoverHour].Y,
+                _barSlots[_hoverHour].Width, _barSlots[_hoverHour].Height), 4,
+                Ui.WithAlpha(p.Accent1, 28));
+            Charts.Tooltip(g, new Rectangle(0, 0, ContentW, ContentH), cur,
+                _hoverHour.ToString("D2") + ":00 - " + ((_hoverHour + 1) % 24).ToString("D2") + ":00",
+                Charts.Number(Snap.Today.Hours[_hoverHour]) + " 次", p);
         }
 
         private void DrawRecent(Graphics g, Rectangle r, Palette p)

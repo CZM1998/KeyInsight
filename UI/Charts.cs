@@ -92,6 +92,13 @@ namespace KeyInsight.UI
 
         public static void DrawBars24(Graphics g, Rectangle r, int[] hours, Palette p)
         {
+            DrawBars24(g, r, hours, p, null);
+        }
+
+        /// <summary>带命中槽位的柱状图（hover 数据检查）；hitSlots[h] = 该小时整列矩形。</summary>
+        public static void DrawBars24(Graphics g, Rectangle r, int[] hours, Palette p,
+            Rectangle[] hitSlots)
+        {
             int left = 42;
             int bottom = 22;
             int top = 10;
@@ -114,6 +121,10 @@ namespace KeyInsight.UI
             int barW = Math.Max(3, slot - Math.Max(3, slot / 5));
             for (int h = 0; h < 24; h++)
             {
+                if (hitSlots != null && h < hitSlots.Length)
+                {
+                    hitSlots[h] = new Rectangle(plot.X + h * slot, plot.Y, slot, plot.Height);
+                }
                 int bh = (int)Math.Round(plot.Height * (hours[h] / (double)max));
                 if (hours[h] > 0 && bh < 2) bh = 2;
                 int x = plot.X + h * slot + (slot - barW) / 2;
@@ -141,6 +152,13 @@ namespace KeyInsight.UI
 
         public static void DrawTrend(Graphics g, Rectangle r, long[] values, Palette p)
         {
+            DrawTrend(g, r, values, p, null);
+        }
+
+        /// <summary>带命中槽位的趋势图；hitSlots[i] = 第 i 个点的竖直条带。</summary>
+        public static void DrawTrend(Graphics g, Rectangle r, long[] values, Palette p,
+            Rectangle[] hitSlots)
+        {
             int left = 46;
             int bottom = 20;
             int top = 10;
@@ -165,6 +183,11 @@ namespace KeyInsight.UI
             float dx = plot.Width / (float)(values.Length - 1);
             for (int i = 0; i < values.Length; i++)
             {
+                if (hitSlots != null && i < hitSlots.Length)
+                {
+                    hitSlots[i] = new Rectangle((int)(plot.X + i * dx - dx / 2), plot.Y,
+                        Math.Max(3, (int)dx), plot.Height);
+                }
                 float x = plot.X + i * dx;
                 float y = plot.Bottom - (float)(plot.Height * (values[i] / (double)max));
                 pts[i] = new PointF(x, y);
@@ -201,6 +224,13 @@ namespace KeyInsight.UI
 
         public static void DrawHeat7x24(Graphics g, Rectangle r, int[,] grid, Palette p)
         {
+            DrawHeat7x24(g, r, grid, p, null);
+        }
+
+        /// <summary>带命中单元的热力图；hitCells[d*24+h] = 单元矩形。</summary>
+        public static void DrawHeat7x24(Graphics g, Rectangle r, int[,] grid, Palette p,
+            Rectangle[] hitCells)
+        {
             int left = 28;
             int top = 18;
             int right = 4;
@@ -225,6 +255,10 @@ namespace KeyInsight.UI
                     RectangleF cell = new RectangleF(plot.X + h * cw + gap / 2, plot.Y + d * ch + gap / 2,
                         Math.Max(2, cw - gap), Math.Max(2, ch - gap));
                     Ui.FillRound(g, cell, 3f, c);
+                    if (hitCells != null && d * 24 + h < hitCells.Length)
+                    {
+                        hitCells[d * 24 + h] = Rectangle.Round(cell);
+                    }
                 }
             }
 
@@ -445,5 +479,47 @@ namespace KeyInsight.UI
             Ui.FillRound(g, r, 8, bg);
             Ui.TextCenter(g, text, Ui.Body, fg, r);
         }
+    
+        /// <summary>
+        /// 图表数据检查浮层（hover tooltip）：深色圆角卡片 + 标题/数值两行，
+        /// 跟随光标并钳制在页面内容区内。由页面在 Draw 末尾调用。
+        /// </summary>
+        public static void Tooltip(Graphics g, Rectangle bounds, Point cursor,
+            string title, string value, Palette p)
+        {
+            if (string.IsNullOrEmpty(title) && string.IsNullOrEmpty(value)) return;
+            int tw = string.IsNullOrEmpty(title) ? 0 : Ui.MeasureWidth(g, title, Ui.BodySmall);
+            int vw = string.IsNullOrEmpty(value) ? 0 : Ui.MeasureWidth(g, value, Ui.Body);
+            int w = Math.Max(72, Math.Max(tw, vw) + 24);
+            int h = string.IsNullOrEmpty(title) ? 32 : 48;
+            int x = cursor.X + 14;
+            int y = cursor.Y + 16;
+            if (x + w > bounds.Right - 6) x = cursor.X - w - 10;
+            if (y + h > bounds.Bottom - 6) y = cursor.Y - h - 10;
+            if (x < bounds.Left) x = bounds.Left;
+            if (y < bounds.Top) y = bounds.Top;
+            Rectangle box = new Rectangle(x, y, w, h);
+            using (GraphicsPath path = Ui.RoundRect(new RectangleF(box.X, box.Y, box.Width, box.Height), 8))
+            {
+                using (SolidBrush bg = new SolidBrush(Ui.WithAlpha(p.Dark ? Color.FromArgb(18, 26, 40) : Color.FromArgb(32, 42, 58), 242)))
+                {
+                    g.FillPath(bg, path);
+                }
+                using (Pen pen = new Pen(Ui.WithAlpha(p.Accent1, 200), 1f))
+                {
+                    g.DrawPath(pen, path);
+                }
+            }
+            if (!string.IsNullOrEmpty(title))
+            {
+                Ui.TextLeft(g, title, Ui.BodySmall, p.Text, new Rectangle(box.X + 12, box.Y + 6, box.Width - 24, 18));
+                Ui.TextLeft(g, value, Ui.Body, p.Accent2, new Rectangle(box.X + 12, box.Y + 24, box.Width - 24, 20));
+            }
+            else
+            {
+                Ui.TextLeft(g, value, Ui.Body, p.Text, new Rectangle(box.X + 12, box.Y + 6, box.Width - 24, 20));
+            }
+        }
+
     }
 }

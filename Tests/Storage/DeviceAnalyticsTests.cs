@@ -25,6 +25,8 @@ namespace KeyInsight.Tests.Storage
             TestRegistry.Add("Storage", "AN004_CsvAndMarkdownExports", AN004);
             TestRegistry.Add("Storage", "AN005_UsbTopologyAssembly", AN005);
             TestRegistry.Add("Storage", "AN006_AudioEnumerateSmoke", AN006);
+            TestRegistry.Add("Storage", "AN007_AppTimeAggregation", AN007);
+            TestRegistry.Add("Storage", "AN008_AppTimeJsonRoundTrip", AN008);
         }
 
         private static DeviceEventItem Ev(DeviceEventType t, string deviceId, DateTime utc)
@@ -154,6 +156,44 @@ namespace KeyInsight.Tests.Storage
             }
             Check.Equal(0L, (long)hubDepth, "hub at root");
             Check.Equal(1L, (long)mouseDepth, "mouse nested under hub");
+        }
+
+        private static void AN007()
+        {
+            DateTime today = new DateTime(2026, 11, 4);
+            Dictionary<string, Dictionary<string, long>> days =
+                new Dictionary<string, Dictionary<string, long>>();
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today, "chrome", 3600);
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today, "chrome", 600);
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today.AddDays(-1), "Code", 1800);
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today.AddDays(-10), "chrome", 300);
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today, "", 999);
+
+            var week = KeyInsight.Stats.AppTimeTracker.SumRange(days, today.AddDays(-6), today);
+            Check.Equal(4200L, week["chrome"], "chrome seconds in 7d window");
+            Check.Equal(1800L, week["Code"], "case-insensitive app key");
+            var all = KeyInsight.Stats.AppTimeTracker.SumRange(
+                days, DateTime.MinValue, DateTime.MaxValue);
+            Check.Equal(4500L, all["chrome"], "all-range includes -10d");
+            Check.Equal(6300L, KeyInsight.Stats.AppTimeTracker.TotalSeconds(all), "total seconds");
+            var top = KeyInsight.Stats.AppTimeTracker.TopApps(all, 1);
+            Check.Equal(1L, (long)top.Count, "top n limit");
+            Check.Equal("chrome", top[0].Key, "top app by seconds");
+        }
+
+        private static void AN008()
+        {
+            DateTime today = new DateTime(2026, 11, 4);
+            Dictionary<string, Dictionary<string, long>> days =
+                new Dictionary<string, Dictionary<string, long>>();
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today, "微信", 125);
+            KeyInsight.Stats.AppTimeTracker.AddSeconds(days, today, "Chrome", 3600);
+            string json = KeyInsight.Stats.AppTimeTracker.BuildJson(days);
+            Check.True(json.Contains("微信") || json.Contains("微信"), "json contains cjk app");
+            var parsed = KeyInsight.Stats.AppTimeTracker.ParseJson(json);
+            Check.True(parsed != null && parsed.Count == 1, "one day parsed");
+            Check.Equal(3600L, parsed["2026-11-04"]["Chrome"], "chrome seconds round trip");
+            Check.Equal(125L, parsed["2026-11-04"]["微信"], "cjk app round trip");
         }
 
         private static void AN006()
