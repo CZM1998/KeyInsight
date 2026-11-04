@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  KeyInsight 方案 B · 抽象 KI 字母型 · 矢量母版（横版锁定）
+  依据《综合外设管理平台实施方案》§2.2/§2.3 由 Agent 依据概念稿重绘（草案）。
+  状态：草案 —— 正式发布前仍需人工审校字母结构/负形/圆角/16px 可读性。
+  配色：深海蓝 #0B2A6B · 科技蓝 #007BFF · 冰蓝 #D9F0FF · 蓝灰 #6B8BA4
+  规则：图形独立版用于 App/任务栏/托盘；四周保留 ≥12% 宽度安全留白；
+        不得拉伸、倾斜、加额外描边或改变 K/I 结构。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 220" width="640" height="220">
+  <defs>
+    <linearGradient id="kiTech" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#007BFF"/>
+      <stop offset="1" stop-color="#0B2A6B"/>
+    </linearGradient>
+    <linearGradient id="kiIce" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D9F0FF"/>
+      <stop offset="1" stop-color="#007BFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 图形区（viewBox 左侧 0-200；内容安全留白 24px ≥ 12% 图形宽） -->
+  <g transform="translate(24,30)">
+    <!-- K：主竖笔画（深海蓝） -->
+    <path d="M6 0 L46 0 L46 160 L6 160 Z" fill="#0B2A6B"/>
+    <!-- K：上斜笔画（科技蓝渐变，斜向切面表达连接与数据流） -->
+    <path d="M46 74 L118 0 L172 0 L84 92 Z" fill="url(#kiTech)"/>
+    <!-- K：下斜笔画（科技蓝） -->
+    <path d="M46 88 L104 160 L52 160 L6 106 Z" fill="#007BFF"/>
+    <!-- I：垂直结构（系统中枢，冰蓝渐变） -->
+    <path d="M186 0 L224 0 L224 160 L186 160 Z" fill="url(#kiIce)"/>
+    <!-- I：顶部斜切（与 K 呼应的几何切面） -->
+    <path d="M186 0 L224 0 L224 34 L186 58 Z" fill="#007BFF" opacity="0.55"/>
+    <!-- 信号弧线 ×3：设备感知/采集/洞察反馈（非 Wi-Fi 语义） -->
+    <g fill="none" stroke="#007BFF" stroke-width="10" stroke-linecap="round">
+      <path d="M236 26 A 44 44 0 0 1 262 36" opacity="0.45"/>
+      <path d="M232 8 A 70 70 0 0 1 280 24" opacity="0.7"/>
+      <path d="M228 -12 A 98 98 0 0 1 298 10"/>
+    </g>
+  </g>
+
+  <!-- 字标（横版锁定：图形 + KeyInsight 英文） -->
+  <text x="340" y="138" font-family="Segoe UI, Arial, sans-serif" font-size="64"
+        font-weight="700" fill="#0B2A6B" letter-spacing="1">KeyInsight</text>
+  <!-- 深色背景版：将本 text 的 fill 改为 #FFFFFF（§2.3） -->
+</svg>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  KeyInsight 方案 B · 托盘简化单色版（§2.3：16-24px 独立简化 —— 保留 KI 主体轮廓，
+  减少渐变/切面/信号弧线细节；单色适配浅/深任务栏，使用 currentColor 便于系统着色）。
+  状态：草案 —— 需在 16px 实际像素下人工验收可读性后替换 Assets/app.ico 的小尺寸帧。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- 12% 安全留白：内容区 28×28 居中 -->
+  <g transform="translate(2,2)" fill="currentColor">
+    <!-- K 竖笔 -->
+    <rect x="2" y="2" width="7" height="28" rx="1.5"/>
+    <!-- K 上斜（简化为直角笔画） -->
+    <path d="M10 15 L22 2 L28 2 L14 17 Z"/>
+    <!-- K 下斜 -->
+    <path d="M10 17 L23 30 L16 30 L7 20 Z"/>
+    <!-- I（与 K 留 1px 分件缝） -->
+    <rect x="24" y="2" width="6" height="28" rx="1.5" opacity="0.85"/>
+    <!-- 单条信号弧（托盘版只保留一条，最简语义） -->
+    <path d="M28 1 A 10 10 0 0 1 30 6" fill="none" stroke="currentColor"
+          stroke-width="2.4" stroke-linecap="round" opacity="0.7"/>
+  </g>
+</svg>

@@ -232,6 +232,100 @@ namespace KeyInsight.Adapters.Display
             return hash;
         }
 
+        // —— DDC/CI 亮度（方案 §8.6；全部失败容错，不认定硬件故障） ——
+
+        public sealed class BrightnessInfo
+        {
+            public bool Supported;          // DDC/CI 亮度能力可用
+            public bool Known;              // 是否已探测（false = 未知）
+            public uint Min;
+            public uint Current;
+            public uint Max;
+            public string MonitorDescription;
+        }
+
+        /// <summary>按屏幕矩形定位物理显示器并读取亮度区间。后台线程调用。</summary>
+        public static BrightnessInfo QueryBrightness(MonitorInfo m)
+        {
+            BrightnessInfo info = new BrightnessInfo();
+            if (m == null || m.CurrentWidth <= 0) return info;
+            DisplayInterop.RECT rect = new DisplayInterop.RECT();
+            rect.Left = m.PositionX;
+            rect.Top = m.PositionY;
+            rect.Right = m.PositionX + m.CurrentWidth;
+            rect.Bottom = m.PositionY + m.CurrentHeight;
+            IntPtr hMonitor = DisplayInterop.MonitorFromRect(ref rect,
+                DisplayInterop.MONITOR_DEFAULTTONEAREST);
+            if (hMonitor == IntPtr.Zero) return info;
+
+            uint count = 0;
+            if (!DisplayInterop.GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, ref count)
+                || count == 0)
+            {
+                return info;
+            }
+            DisplayInterop.PHYSICAL_MONITOR[] monitors =
+                new DisplayInterop.PHYSICAL_MONITOR[count];
+            if (!DisplayInterop.GetPhysicalMonitorsFromHMONITOR(hMonitor, count, monitors))
+            {
+                return info;
+            }
+            try
+            {
+                info.Known = true;
+                uint min = 0, current = 0, max = 0;
+                if (DisplayInterop.GetMonitorBrightness(monitors[0].hPhysicalMonitor,
+                    ref min, ref current, ref max) && max > min)
+                {
+                    info.Supported = true;
+                    info.Min = min;
+                    info.Current = current;
+                    info.Max = max;
+                    info.MonitorDescription = monitors[0].description ?? "";
+                }
+            }
+            finally
+            {
+                try { DisplayInterop.DestroyPhysicalMonitors(count, monitors); } catch { }
+            }
+            return info;
+        }
+
+        /// <summary>设置亮度（必须由用户主动触发 —— 方案 §8.6）。返回是否成功。</summary>
+        public static bool SetBrightness(MonitorInfo m, uint value)
+        {
+            if (m == null || m.CurrentWidth <= 0) return false;
+            DisplayInterop.RECT rect = new DisplayInterop.RECT();
+            rect.Left = m.PositionX;
+            rect.Top = m.PositionY;
+            rect.Right = m.PositionX + m.CurrentWidth;
+            rect.Bottom = m.PositionY + m.CurrentHeight;
+            IntPtr hMonitor = DisplayInterop.MonitorFromRect(ref rect,
+                DisplayInterop.MONITOR_DEFAULTTONEAREST);
+            if (hMonitor == IntPtr.Zero) return false;
+
+            uint count = 0;
+            if (!DisplayInterop.GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, ref count)
+                || count == 0)
+            {
+                return false;
+            }
+            DisplayInterop.PHYSICAL_MONITOR[] monitors =
+                new DisplayInterop.PHYSICAL_MONITOR[count];
+            if (!DisplayInterop.GetPhysicalMonitorsFromHMONITOR(hMonitor, count, monitors))
+            {
+                return false;
+            }
+            try
+            {
+                return DisplayInterop.SetMonitorBrightness(monitors[0].hPhysicalMonitor, value);
+            }
+            finally
+            {
+                try { DisplayInterop.DestroyPhysicalMonitors(count, monitors); } catch { }
+            }
+        }
+
         public static string ToAttributesJson(MonitorInfo m, int index)
         {
             StringBuilder sb = new StringBuilder(1024);

@@ -21,6 +21,10 @@ namespace KeyInsight.UI
         private readonly Button _archive;
         private readonly FlowLayoutPanel _capPanel;
         private readonly TextBox _note;
+        private TrackBar _brightness;
+        private Label _brightnessValue;
+        private DisplayAdapter.BrightnessInfo _brightnessInfo;
+        private volatile bool _brightnessBusy;
 
         public DeviceDetailForm(IShellActions shell, DeviceRecord record)
         {
@@ -32,7 +36,8 @@ namespace KeyInsight.UI
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(620, 560);
+            ClientSize = new Size(620,
+                record.Category == DeviceCategory.Display ? 700 : 620);
             BackColor = Theme.P.Card;
             ForeColor = Theme.P.Text;
             Font = Ui.Body;
@@ -229,7 +234,7 @@ namespace KeyInsight.UI
                 AddCap("EDID 档案", "Read", "WindowsApi");
                 AddCap("显示器体检（六类图案）", "Test", "UserConfirmed");
                 AddCap("HDR 状态观察", "Observe", "WindowsApi");
-                AddCap("亮度控制", "Control", "DDC_CI（可用性未知）");
+                AddCap("亮度控制", "Control", "DDC_CI（可用性见下方亮度区）");
             }
             else
             {
@@ -344,6 +349,77 @@ namespace KeyInsight.UI
             {
                 Dialogs.Error(this, "导出失败", ex.Message);
             }
+        }
+
+        private void BeginQueryBrightness()
+        {
+            if (_brightnessBusy) return;
+            _brightnessBusy = true;
+            DisplayAdapter.MonitorInfo monitor = ResolveMonitor();
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                DisplayAdapter.BrightnessInfo info = DisplayAdapter.QueryBrightness(monitor);
+                try
+                {
+                    BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        ApplyBrightnessInfo(info);
+                    });
+                }
+                catch { }
+            });
+        }
+
+        private void ApplyBrightnessInfo(DisplayAdapter.BrightnessInfo info)
+        {
+            _brightnessBusy = false;
+            _brightnessInfo = info;
+            if (info == null || !info.Known)
+            {
+                _brightnessValue.Text = "亮度能力未知（探测未完成或显示器离线）";
+                return;
+            }
+            if (!info.Supported)
+            {
+                _brightnessValue.Text = "此显示器暂不支持 DDC/CI 亮度（可能是线材、转接器、KVM 或驱动限制，不代表故障）";
+                return;
+            }
+            _brightness.Minimum = (int)info.Min;
+            _brightness.Maximum = (int)info.Max;
+            _brightness.Value = (int)Math.Max(info.Min, Math.Min(info.Max, info.Current));
+            _brightness.Enabled = true;
+            _brightnessValue.Text = "当前亮度 " + info.Current + "（范围 " + info.Min + "-" +
+                info.Max + "）· 拖动后松开即生效";
+        }
+
+        private void CommitBrightness()
+        {
+            if (_brightness == null || !_brightness.Enabled || _brightnessBusy) return;
+            if (_brightnessInfo == null || !_brightnessInfo.Supported) return;
+            uint value = (uint)_brightness.Value;
+            DisplayAdapter.MonitorInfo monitor = ResolveMonitor();
+            _brightnessValue.Text = "正在设置亮度 " + value + "…";
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                bool ok = DisplayAdapter.SetBrightness(monitor, value);
+                try
+                {
+                    BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        if (ok)
+                        {
+                            _brightnessInfo.Current = value;
+                            _brightnessValue.Text = "已设置亮度 " + value + "（范围 " +
+                                _brightnessInfo.Min + "-" + _brightnessInfo.Max + "）· 可拖回恢复";
+                        }
+                        else
+                        {
+                            _brightnessValue.Text = "设置失败（连接或驱动限制；可重试，不代表硬件故障）";
+                        }
+                    });
+                }
+                catch { }
+            });
         }
 
         private void SaveNote()

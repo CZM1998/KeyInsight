@@ -218,6 +218,51 @@ namespace KeyInsight.Adapters.Display
         internal const int DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2;
         internal const int DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO = 9;
 
+        // —— DDC/CI 亮度（方案 §8.6，dxva2.dll）——
+        // 仅用户主动操作时调用 Set；读取失败一律降级为「不支持/暂不可用」，
+        // 不把 VCP 失败认定为显示器故障（可能是线材/转接器/KVM/驱动限制）。
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        internal struct PHYSICAL_MONITOR
+        {
+            public IntPtr hPhysicalMonitor;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string description;
+        }
+
+        internal const uint MONITOR_DEFAULTTONEAREST = 2;
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr MonitorFromRect(ref RECT rect, uint flags);
+
+        [DllImport("dxva2.dll", SetLastError = true)]
+        internal static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr hMonitor,
+            ref uint count);
+
+        [DllImport("dxva2.dll", SetLastError = true)]
+        internal static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr hMonitor,
+            uint count, [Out] PHYSICAL_MONITOR[] monitors);
+
+        [DllImport("dxva2.dll", SetLastError = true)]
+        internal static extern bool GetMonitorBrightness(IntPtr handle,
+            ref uint min, ref uint current, ref uint max);
+
+        [DllImport("dxva2.dll", SetLastError = true)]
+        internal static extern bool SetMonitorBrightness(IntPtr handle, uint newValue);
+
+        [DllImport("dxva2.dll", SetLastError = true)]
+        internal static extern bool DestroyPhysicalMonitors(uint count,
+            [In] PHYSICAL_MONITOR[] monitors);
+
         /// <summary>输出技术 → 可读文本（方案 §8.1 显示链路）。</summary>
         internal static string ConnectorText(uint technology)
         {

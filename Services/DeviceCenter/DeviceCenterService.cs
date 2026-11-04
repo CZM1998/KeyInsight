@@ -235,6 +235,8 @@ namespace KeyInsight.Services.DeviceCenter
             try { snapshots.AddRange(_pnp.Enumerate()); } catch { }
             try { snapshots.AddRange(_audio.EnumerateSnapshots()); } catch { }
             try { snapshots.AddRange(KeyInsight.Adapters.Input.XInputAdapter.Enumerate()); } catch { }
+            try { snapshots.AddRange(
+                new KeyInsight.Adapters.Camera.CameraAdapter().EnumerateSnapshots()); } catch { }
             try { EnrichPrinters(snapshots); } catch { }
             ApplySnapshots(snapshots);
             TrackDefaultAudioEndpoints();
