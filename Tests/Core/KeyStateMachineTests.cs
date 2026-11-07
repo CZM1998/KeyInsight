@@ -42,6 +42,7 @@ namespace KeyInsight.Tests.Core
             TestRegistry.Add("Core", "KSM020_BoundaryStrictLess", KSM020);
             TestRegistry.Add("Core", "KSM_AppWhitelist", KSM_AppWhitelist);
             TestRegistry.Add("Core", "KSM_LegacyParityViaEngine", KSM_LegacyParityViaEngine);
+            TestRegistry.Add("Core", "KSM021_ComboProtection", KSM021_ComboProtection);
         }
 
         // —— 回放工具 ——
@@ -103,17 +104,23 @@ namespace KeyInsight.Tests.Core
         {
             // 观察模式：合法快速点击不阻挡，只计候选
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.ObserveOnly, 20, true, RulesFor(KeyE), null, true));
-            string d = Decisions(e, new double[] { 0, 40, 50, 70 }, new[] { true, false, true, false }, KeyE);
+            // 机器级短促周期（2ms 按压）→ 计入候选；观察模式仍不拦截
+            string d = Decisions(e, new double[] { 0, 2, 5, 40 }, new[] { true, false, true, false }, KeyE);
             Check.Equal("PPPP", d, "observe mode never suppresses");
             Check.True(e.BounceCandidates > 0, "candidates observed");
         }
 
         private static void KSM003()
         {
-            // 单键显式启用：D0 U50 D60 U90 → P P S S（第二次 Down/Up 一并过滤）
+            // 单键显式启用：D0 U50 D60 U90 → 全放行（50ms 是健康按压周期，
+            // 快速重按属于连发/组合键，组合键保护不吞——v2.1 误伤修复）
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
-            Check.Equal("PPSS", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, KeyE),
-                "KSM-003");
+            Check.Equal("PPPP", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, KeyE),
+                "KSM-003 healthy cycle re-press passes");
+            // 机器级弹跳周期（2ms 按压）仍拦截，配对 Up 一并过滤
+            KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSS", Decisions(e2, new double[] { 0, 2, 5, 40 }, new[] { true, false, true, false }, KeyE),
+                "KSM-003 chatter cycle suppressed");
         }
 
         private static void KSM004()
@@ -129,7 +136,7 @@ namespace KeyInsight.Tests.Core
                 InputDecision d = Eval(e, keys[i], down[i], t[i], keys[i].VirtualKey);
                 sb.Append(d.Kind == DecisionKind.Suppress ? 'S' : 'P');
             }
-            Check.Equal("PPPPSS", sb.ToString(), "KSM-004 interleaved");
+            Check.Equal("PPPPPP", sb.ToString(), "KSM-004 interleaved (healthy cycles pass)");
         }
 
         private static void KSM005()
@@ -144,8 +151,12 @@ namespace KeyInsight.Tests.Core
         {
             // 已过滤 Press 期间的重复 Down 不放行，Up 不泄露
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
-            Check.Equal("PPSSS", Decisions(e, new double[] { 0, 50, 60, 80, 100 }, new[] { true, false, true, true, false }, KeyE),
-                "KSM-006");
+            Check.Equal("PPPPP", Decisions(e, new double[] { 0, 50, 60, 80, 100 }, new[] { true, false, true, true, false }, KeyE),
+                "KSM-006 healthy cycle passes");
+            // 抖动周期：拦截 Press 期间的重复 Down 不放行，配对 Up 不泄露
+            KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSSS", Decisions(e2, new double[] { 0, 2, 5, 8, 12 }, new[] { true, false, true, true, false }, KeyE),
+                "KSM-006 chatter: no up leak");
         }
 
         private static void KSM007()
@@ -168,17 +179,17 @@ namespace KeyInsight.Tests.Core
             // 两个 Enter 身份互不污染（即使主/小键盘 Enter 都启用了独立策略）
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true,
                 RulesFor(MainEnter, NumpadEnter), null, true));
-            Check.Equal("PPSS", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, NumpadEnter),
-                "numpad enter own window");
-            Check.Equal("PPSS", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, MainEnter),
-                "main enter own window");
+            Check.Equal("PPPP", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, NumpadEnter),
+                "numpad enter own window (healthy cycle passes)");
+            Check.Equal("PPPP", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, MainEnter),
+                "main enter own window (healthy cycle passes)");
             KeyStateMachine numpadSm = null;
-            // 状态隔离的强验证：num enter 已拦截待配对后，主 enter 首按必须放行
+            // 状态隔离的强验证：num enter 抖动拦截待配对后，主 enter 首按必须放行
             KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true,
                 RulesFor(MainEnter, NumpadEnter), null, true));
             Eval(e2, NumpadEnter, true, 0, 0x1000D);
-            Eval(e2, NumpadEnter, false, 50, 0x1000D);
-            Eval(e2, NumpadEnter, true, 60, 0x1000D); // suppressed press pending
+            Eval(e2, NumpadEnter, false, 2, 0x1000D);
+            Eval(e2, NumpadEnter, true, 5, 0x1000D); // chatter: suppressed press pending
             InputDecision mainFirst = Eval(e2, MainEnter, true, 65, 0x0D);
             Check.True(mainFirst.Kind == DecisionKind.Pass, "main enter unaffected by numpad pending press");
             Check.True(numpadSm == null, "placeholder");
@@ -188,9 +199,13 @@ namespace KeyInsight.Tests.Core
         {
             // SkipInjected=true：引擎不应被喂入注入事件（钩子旁路）；SkipInjected=false 时按普通事件处理（旧口径一致）
             KeyInsightPolicyEngine legacy = new KeyInsightPolicyEngine(Snapshot(PolicyMode.LegacyCompatible, 25, true, null, null, false));
-            // 注入 D0 U50 D60：gapUp=10 < 40 → 旧实现会拦（SkipInjected=false 时注入也参与过滤）
-            Check.Equal("PPS", Decisions(legacy, new double[] { 0, 50, 60 }, new[] { true, false, true }, KeyE),
-                "legacy treats injected as normal when skip=false (v2.1.x parity)");
+            // 注入按普通事件处理（SkipInjected=false）：健康周期重按放行（组合键保护）
+            Check.Equal("PPP", Decisions(legacy, new double[] { 0, 50, 60 }, new[] { true, false, true }, KeyE),
+                "legacy treats injected as normal when skip=false");
+            // 对照：机器级短促周期确实会拦（证明上面的 P 不是阈值失效）；用全新引擎避免串状态
+            KeyInsightPolicyEngine legacy2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.LegacyCompatible, 25, true, null, null, false));
+            Check.Equal("PPS", Decisions(legacy2, new double[] { 0, 2, 12 }, new[] { true, false, true }, KeyE),
+                "legacy chatter control suppresses");
 
             KeyInsightPolicyEngine perKey = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, false));
             NormalizedKeyEvent inj = new NormalizedKeyEvent();
@@ -209,8 +224,8 @@ namespace KeyInsight.Tests.Core
             // 改策略期间处于 SuppressedPress：D0 U50 D60 [Disable] U80 → P P S S（安全配对清理），后续全放行
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
             InputDecision d1 = Eval(e, KeyE, true, 0, VkE);
-            InputDecision d2 = Eval(e, KeyE, false, 50, VkE);
-            InputDecision d3 = Eval(e, KeyE, true, 60, VkE);
+            InputDecision d2 = Eval(e, KeyE, false, 2, VkE);
+            InputDecision d3 = Eval(e, KeyE, true, 5, VkE); // 抖动周期 → SuppressedPress
             Check.True(d1.Kind == DecisionKind.Pass && d2.Kind == DecisionKind.Pass && d3.Kind == DecisionKind.Suppress,
                 "pre-disable decisions");
 
@@ -248,7 +263,9 @@ namespace KeyInsight.Tests.Core
         {
             // E 启用、R 未启用：同轨迹 E 过滤、R 全放行
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
-            Check.Equal("PPSS", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, KeyE), "E filtered");
+            Check.Equal("PPPP", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, KeyE), "E healthy cycle passes");
+            KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSS", Decisions(e2, new double[] { 0, 2, 5, 40 }, new[] { true, false, true, false }, KeyE), "E chatter filtered");
             Check.Equal("PPPP", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, KeyR),
                 "R untouched");
         }
@@ -292,8 +309,8 @@ namespace KeyInsight.Tests.Core
             // 抑制后丢失配对 Up：超过过期边界后下一 Down 保守恢复放行，绝不永久锁死
             KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
             InputDecision d1 = Eval(e, KeyE, true, 0, VkE);
-            InputDecision d2 = Eval(e, KeyE, false, 50, VkE);
-            InputDecision d3 = Eval(e, KeyE, true, 60, VkE);
+            InputDecision d2 = Eval(e, KeyE, false, 2, VkE);
+            InputDecision d3 = Eval(e, KeyE, true, 5, VkE); // 抖动 → SuppressedPress
             Check.True(d3.Kind == DecisionKind.Suppress, "suppressed press pending");
 
             // 安全期内仍未恢复
@@ -331,9 +348,9 @@ namespace KeyInsight.Tests.Core
 
             KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
             Eval(e2, KeyE, true, 0, VkE);
-            Eval(e2, KeyE, false, 50, VkE);
-            InputDecision c2 = Eval(e2, KeyE, true, 69.9, VkE);
-            Check.True(c2.Kind == DecisionKind.Suppress, "gap < threshold suppresses");
+            Eval(e2, KeyE, false, 2, VkE); // 抖动周期（2ms 按压）
+            InputDecision c2 = Eval(e2, KeyE, true, 21.9, VkE); // gapUp = 19.9 < 20
+            Check.True(c2.Kind == DecisionKind.Suppress, "gap < threshold suppresses (chatter cycle)");
         }
 
         private static void KSM_AppWhitelist()
@@ -363,6 +380,24 @@ namespace KeyInsight.Tests.Core
             ev.MonoMs = 1010;
             InputDecision d = e.Evaluate(ev);
             Check.True(d.Kind == DecisionKind.Suppress, "outside whitelist filters (bounce window, gapUp=5<20)");
+        }
+
+        private static void KSM021_ComboProtection()
+        {
+            // 组合键保护：显式启用的键，健康按压周期（50ms）后的快速重按放行（v2.1 误伤修复）
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPPP", Decisions(e, new double[] { 0, 50, 60, 90 }, new[] { true, false, true, false }, KeyE),
+                "KSM-021 combo re-press passes");
+
+            // 机器级弹跳周期（2ms 按压）仍拦截且 Up 不泄露
+            KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSS", Decisions(e2, new double[] { 0, 2, 5, 40 }, new[] { true, false, true, false }, KeyE),
+                "KSM-021 chatter cycle suppressed");
+
+            // 长按（含自动重复）结束后立刻重按：放行（按住 900ms 不算弹跳周期）
+            KeyInsightPolicyEngine e3 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 40, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPPPP", Decisions(e3, new double[] { 0, 300, 600, 900, 920 },
+                new[] { true, true, true, false, true }, KeyE), "KSM-021 re-press after hold passes");
         }
 
         private static void KSM_LegacyParityViaEngine()

@@ -97,8 +97,8 @@ namespace KeyInsight.UI.Pages
             for (int i = 0; i < Windows.Length; i++) if (Windows[i] == _shell.Cfg.ThresholdMs) sel = i;
             DrawChips(g, labels, sel, r.X, r.Y + 86, 26, out _thRects);
 
-            Ui.TextLeftEllipsis(g, "按下间隔 25 ms + 松开后 40 ms 双窗口；实测抖动 0.7–6.2 ms，" +
-                "仍漏网可提高到 30 ms。", Ui.Label, p.Dim,
+            Ui.TextLeftEllipsis(g, "按下间隔短于窗口或 30ms 内的机械弹跳被过滤；" +
+                "正常重按 / 连续组合键（Ctrl+C 等）不拦。", Ui.Label, p.Dim,
                 new Rectangle(r.X, r.Y + 112, r.Width, 30));
         }
 

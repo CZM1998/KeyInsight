@@ -31,6 +31,7 @@ namespace KeyInsight.Core.Policy
 
         public KeySmState State;
         public double LastDeliveredUpMs = double.MinValue;
+        public double LastDeliveredDownMs = double.MinValue;
         public double LastObservedDownMs = double.MinValue;
         public double LastObservedUpMs = double.MinValue;
         // SuppressedPress 的起始时刻（不随后续重复 Down 刷新）——过期判定的唯一时间基准，
@@ -72,8 +73,14 @@ namespace KeyInsight.Core.Policy
                 case KeySmState.Unknown:
                 {
                     double gapUp = LastDeliveredUpMs != double.MinValue ? nowMs - LastDeliveredUpMs : double.MaxValue;
-                    // 依据上次“放行的 Up”判定快速重按；仅显式启用该键策略时才拦截
-                    if (gapUp < thresholdMs)
+                    // 依据上次“放行的 Up”判定快速重按；仅显式启用该键策略时才拦截。
+                    // 组合键保护：gapUp 窗口只对“上一个按下→释放周期本身短促（机器级弹跳）”
+                    // 生效；健康周期（人类节奏的重按、连续组合键）放行。周期起点未知
+                    // （孤儿 Up 等）一律放行，不凭猜测拦截。
+                    bool chatterCycle = LastDeliveredUpMs != double.MinValue &&
+                        LastDeliveredDownMs != double.MinValue &&
+                        (LastDeliveredUpMs - LastDeliveredDownMs) < LegacyPolicyAdapter.ChatterPressMaxMs;
+                    if (gapUp < thresholdMs && chatterCycle)
                     {
                         BounceCandidates++;
                         LastObservedDownMs = nowMs;
@@ -83,6 +90,7 @@ namespace KeyInsight.Core.Policy
                             double.MaxValue, gapUp);
                     }
                     LastObservedDownMs = nowMs;
+                    LastDeliveredDownMs = nowMs;
                     State = KeySmState.DeliveredDown;
                     return InputDecision.Pass(DecisionReason.Normal, policyVersion);
                 }
@@ -140,6 +148,7 @@ namespace KeyInsight.Core.Policy
         {
             State = KeySmState.Idle;
             LastDeliveredUpMs = double.MinValue;
+            LastDeliveredDownMs = double.MinValue;
             LastObservedDownMs = double.MinValue;
             LastObservedUpMs = double.MinValue;
             SuppressedPressStartedMs = double.MinValue;

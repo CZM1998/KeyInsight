@@ -29,6 +29,8 @@ namespace KeyInsight.Tests.Core
             TestRegistry.Add("Core", "UpWindowFloor", UpWindowFloor);
             TestRegistry.Add("Core", "ThresholdRuntimeChange", ThresholdRuntimeChange);
             TestRegistry.Add("Core", "LEG001_DifferentialRandomTraces", LEG001_DifferentialRandomTraces);
+            TestRegistry.Add("Core", "LEG_I_RepeatedComboPasses", LEG_I_RepeatedComboPasses);
+            TestRegistry.Add("Core", "LEG_J_ChatterCycleSuppressed", LEG_J_ChatterCycleSuppressed);
         }
 
         /// <summary>按钩子新控制流回放：注入跳过；过滤关=全放行且不触碰策略；过滤开=EvaluateDown/ObserveUp。</summary>
@@ -104,11 +106,12 @@ namespace KeyInsight.Tests.Core
             double g1, g2;
             bool s = p.EvaluateDown(60, VkE, out g1, out g2);
             Check.True(!s, "first real down after injected bypass must pass");
-            // 对照组：同样的时间若状态被更新过（模拟注入污染），同样的 Down 会被拦
+            // 对照组：同样的时间若状态被完整短周期污染过（模拟注入污染），同样的 Down 会被拦
             LegacyPolicyAdapter polluted = new LegacyPolicyAdapter(25);
+            Check.True(!polluted.EvaluateDown(40, VkE, out g1, out g2), "polluted control first down passes");
             polluted.ObserveUp(50, VkE);
             bool s2 = polluted.EvaluateDown(60, VkE, out g1, out g2);
-            Check.True(s2, "control: same timing with polluted state must suppress");
+            Check.True(s2, "control: chatter-cycle polluted state must suppress");
         }
 
         private static void LEG_G_ThresholdBoundary()
@@ -143,10 +146,10 @@ namespace KeyInsight.Tests.Core
             Check.True(!s, "first down after re-enable must pass (no phantom history)");
             Check.True(g1 == double.MaxValue && g2 == double.MaxValue, "no history gaps expected");
 
-            // 对照：同样的密集序列在过滤开启时确实会拦截（证明上面的 P 不是阈值失效）
-            // D50: gapUp=10<40 → S；D71: gapUp=1<40 → S；其余 P → "PPSPSP"
+            // 对照：D71 的 gapDown=21<25 仍会拦（证明上面的 P 不是阈值失效）
+            // D50: gapUp=10<40 但周期 40ms 健康 → 放行（组合键保护）；→ "PPPPSP"
             LegacyPolicyAdapter q = new LegacyPolicyAdapter(25);
-            Check.Equal("PPSPSP", Replay(q, true, t, down, vks, noInj), "filter on control");
+            Check.Equal("PPPPSP", Replay(q, true, t, down, vks, noInj), "filter on control");
         }
 
         private static void KSM004_KeyIsolation()
@@ -158,13 +161,13 @@ namespace KeyInsight.Tests.Core
             bool[] noInj = new bool[t.Length];
 
             LegacyPolicyAdapter p = new LegacyPolicyAdapter(25);
-            Check.Equal("PPPPSS", Replay(p, true, t, down, vk, noInj), "interleaved E/R");
+            Check.Equal("PPPPPP", Replay(p, true, t, down, vk, noInj), "interleaved E/R (healthy cycles)");
 
-            // R 单独回放应得到与交错时 R 位完全一致的决策（P,P,S）
+            // R 单独回放应得到与交错时 R 位完全一致的决策（P,P,P）
             double[] tR = new double[] { 5, 55, 65 };
             bool[] downR = new[] { true, false, true };
             LegacyPolicyAdapter solo = new LegacyPolicyAdapter(25);
-            Check.Equal("PPS", Replay(solo, true, tR, downR,
+            Check.Equal("PPP", Replay(solo, true, tR, downR,
                 new[] { VkR, VkR, VkR }, new bool[3]), "R solo matches interleaved");
         }
 
@@ -186,6 +189,35 @@ namespace KeyInsight.Tests.Core
             bool s = p.EvaluateDown(30, VkE, out g1, out g2);
             Check.True(s, "gapDown=30 < new threshold 60 must suppress (old 25 would pass)");
             Check.Near(60, p.UpWindowMs, 0.0001, "upWindow follows threshold change");
+        }
+
+        // —— 组合键保护（v2.1 误伤修复）回归 ——
+
+        private static void LEG_I_RepeatedComboPasses()
+        {
+            // 连续 Ctrl+C：C 的按下→释放 60ms（人类节奏），40ms upWindow 内的重按必须放行
+            Same(VkE, new double[] { 0, 60, 90, 150, 180 },
+                new[] { true, false, true, false, true }, "PPPPP", "repeated combo");
+
+            // 打字后立刻组合键：c 释放到 Ctrl+C 的 C 之间 30ms，但 c 的按压周期 80ms → 放行
+            Same(VkE, new double[] { 0, 80, 110 },
+                new[] { true, false, true }, "PPP", "combo after typing same letter");
+
+            // 游戏内快速双击：20ms 按压 + 15ms 间隔（cycle=20 < 30 边界内仍拦？不——20<30 会拦，
+            // 这里用 35ms 按压验证人类下限放行）
+            Same(VkE, new double[] { 0, 35, 50 },
+                new[] { true, false, true }, "PPP", "fast human double-tap passes");
+        }
+
+        private static void LEG_J_ChatterCycleSuppressed()
+        {
+            // 抖动完整周期：按下→释放仅 3ms → upWindow 内的重按拦截；之后恢复放行
+            Same(VkE, new double[] { 0, 3, 30, 33, 80 },
+                new[] { true, false, true, false, true }, "PPSPP", "chatter cycle");
+
+            // 弹跳串：窗口内连续拦截（45ms 处距上次弹跳释放 33ms 仍 < 40）
+            Same(VkE, new double[] { 0, 3, 8, 12, 45 },
+                new[] { true, false, true, false, true }, "PPSPS", "bounce train");
         }
 
         private static void LEG001_DifferentialRandomTraces()
@@ -253,7 +285,7 @@ namespace KeyInsight.Tests.Core
             return sb.ToString();
         }
 
-        /// <summary>独立参考实现：直接移植 v2.1.x HookCallback 的判定（tick 整数路径），与被测代码不同源。</summary>
+        /// <summary>独立参考实现：v2.1 判定 + 组合键保护（tick 整数路径），与被测代码不同源。</summary>
         private static string RunRandomReference(int thresholdMs, int seed)
         {
             Ev[] evs = MakeRandom(seed);
@@ -272,9 +304,11 @@ namespace KeyInsight.Tests.Core
                     bool hu = lastUp.TryGetValue(e.Vk, out lu);
                     double gapDown = hd ? TicksToMs(nowTicks - ld) : double.MaxValue;
                     double gapUp = hu ? TicksToMs(nowTicks - lu) : double.MaxValue;
-                    if (gapDown < thresholdMs || gapUp < upWindow)
+                    double cycleMs = e.T - ld / 10000.0; // lastDown(ticks) → ms
+                    bool chatterCycle = hd && hu && cycleMs < 30;
+                    if (gapDown < thresholdMs || (gapUp < upWindow && chatterCycle))
                     {
-                        sb.Append('S'); // 拦截不刷新 lastDown（旧实现）
+                        sb.Append('S'); // 拦截不刷新 lastDown
                     }
                     else
                     {
