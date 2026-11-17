@@ -26,6 +26,14 @@ namespace KeyInsight.Core.Policy
         private long _totalCombos;
         public long TotalCombos { get { return System.Threading.Interlocked.Read(ref _totalCombos); } }
 
+        internal void ResetModifiers()
+        {
+            Array.Clear(_ctrl, 0, _ctrl.Length);
+            Array.Clear(_alt, 0, _alt.Length);
+            Array.Clear(_shift, 0, _shift.Length);
+            Array.Clear(_win, 0, _win.Length);
+        }
+
         /// <summary>
         /// 观察一个键盘事件。返回组合名（如 "ctrl+c"）或 null（非白名单组合）。
         /// 在引擎评估之前/之后调用皆可；本观察器不改变任何输入行为。

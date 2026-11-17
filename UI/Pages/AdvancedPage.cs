@@ -158,7 +158,7 @@ namespace KeyInsight.UI.Pages
             int w = card.Width - 36;
             int y = card.Y + 62;
 
-            DrawToggleRow(g, p, x, y, w, "按键采集", "关闭后钩子只放行、不统计（过滤独立）", _shell.CaptureEnabled, out _switchCapture);
+            DrawToggleRow(g, p, x, y, w, "按键采集", "关闭后停止按键统计和新的防抖拦截", _shell.CaptureEnabled, out _switchCapture);
             y += 50;
             DrawToggleRow(g, p, x, y, w, "诊断聚合", "记录拦截间隔直方图（用于策略模拟/画像，仅聚合摘要）",
                 _shell.DiagnosticsEnabled, out _switchDiagnostics);

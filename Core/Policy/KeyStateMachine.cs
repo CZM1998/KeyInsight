@@ -1,4 +1,3 @@
-using System;
 using KeyInsight.Core.Input;
 
 namespace KeyInsight.Core.Policy
@@ -11,147 +10,175 @@ namespace KeyInsight.Core.Policy
         Unknown = 3
     }
 
-    /// <summary>
-    /// 保守防抖有限状态机（P0-04，设计文档 §4）。
-    ///
-    /// 核心不变量（测试 KSM-001~020）：
-    /// - DeliveredDown + Down：无法可靠区分 OS 自动重复与触点抖动 → 默认 Pass（不吞长按）。
-    /// - SuppressedPress + Up：配对拦截；+ Down（安全期内，该键已显式启用）→ 继续拦截。
-    /// - 未知/缺失历史：一律 Pass，不凭猜测拦截。
-    /// - SuppressedPress 长期等不到 Up（KSM-018）：超过 StuckPressExpiryMs 后在下一次 Down 保守恢复放行，
-    ///   绝不合成 Up/Down，绝不永久锁死按键（Fail Open）。
-    /// - 时间倒退：清理该键候选信息并放行，不产生负间隔误拦。
-    /// 单实例只属于一个 PhysicalKeyId，且只能被键盘钩子线程访问（与 LegacyPolicyAdapter 相同线程模型）。
-    /// </summary>
+    /// <summary>一个物理键的配对与防抖状态，仅供键盘钩子线程使用。</summary>
     public sealed class KeyStateMachine
     {
-        /// <summary>SuppressedPress 的故障过期边界（毫秒）。真实按键持续按住不会超过该时长，
-        /// 超时视为丢失配对 Up，下一 Down 恢复放行。</summary>
+        // 丢失 Up 后，超过此时长的下一次 Down 可以恢复投递。
         public const int StuckPressExpiryMs = 3000;
+        public const double MaxBurstWindowMs = 100.0;
 
         public KeySmState State;
         public double LastDeliveredUpMs = double.MinValue;
         public double LastDeliveredDownMs = double.MinValue;
         public double LastObservedDownMs = double.MinValue;
         public double LastObservedUpMs = double.MinValue;
-        // SuppressedPress 的起始时刻（不随后续重复 Down 刷新）——过期判定的唯一时间基准，
-        // 否则按住不放的自动重复会永远续期，键被锁死（KSM-018）
         public double SuppressedPressStartedMs = double.MinValue;
         public long RepeatCandidates;
         public long BounceCandidates;
         public long StaleRecoveries;
+        internal long HistoryEpoch;
 
-        /// <summary>
-        /// 评估一次 Down。仅在该键显式启用过滤时才可能返回 Suppress。
-        /// nowMs 单调毫秒；thresholdMs 为该键生效阈值；返回间隔供日志。
-        /// </summary>
+        private double _lastSuppressedShortUpMs = double.MinValue;
+
         public InputDecision EvaluateDown(double nowMs, double thresholdMs, int policyVersion)
         {
-            // 故障过期：SuppressedPress 等不到 Up → 恢复放行（KSM-018）
-            if (State == KeySmState.SuppressedPress &&
-                SuppressedPressStartedMs != double.MinValue &&
-                (nowMs - SuppressedPressStartedMs) > StuckPressExpiryMs)
-            {
-                StaleRecoveries++;
-                State = KeySmState.Idle;
-                // 旧的配对 Up 何时到来不可知；此后该键处于“状态不确定”，保守放行一切
-            }
-
-            // 时间倒退（KSM-008）：清理候选信息，重新估计
-            if ((LastObservedDownMs != double.MinValue && nowMs < LastObservedDownMs) ||
-                (LastObservedUpMs != double.MinValue && nowMs < LastObservedUpMs))
-            {
-                LastObservedDownMs = nowMs;
-                LastObservedUpMs = double.MinValue;
-                State = KeySmState.Unknown;
-                return InputDecision.Pass(DecisionReason.UnknownState, policyVersion);
-            }
-
-            switch (State)
-            {
-                case KeySmState.Idle:
-                case KeySmState.Unknown:
-                {
-                    double gapUp = LastDeliveredUpMs != double.MinValue ? nowMs - LastDeliveredUpMs : double.MaxValue;
-                    // 依据上次“放行的 Up”判定快速重按；仅显式启用该键策略时才拦截。
-                    // 组合键保护：gapUp 窗口只对“上一个按下→释放周期本身短促（机器级弹跳）”
-                    // 生效；健康周期（人类节奏的重按、连续组合键）放行。周期起点未知
-                    // （孤儿 Up 等）一律放行，不凭猜测拦截。
-                    bool chatterCycle = LastDeliveredUpMs != double.MinValue &&
-                        LastDeliveredDownMs != double.MinValue &&
-                        (LastDeliveredUpMs - LastDeliveredDownMs) < LegacyPolicyAdapter.ChatterPressMaxMs;
-                    if (gapUp < thresholdMs && chatterCycle)
-                    {
-                        BounceCandidates++;
-                        LastObservedDownMs = nowMs;
-                        SuppressedPressStartedMs = nowMs;
-                        State = KeySmState.SuppressedPress;
-                        return InputDecision.Suppress(DecisionReason.CandidateBounce, policyVersion,
-                            double.MaxValue, gapUp);
-                    }
-                    LastObservedDownMs = nowMs;
-                    LastDeliveredDownMs = nowMs;
-                    State = KeySmState.DeliveredDown;
-                    return InputDecision.Pass(DecisionReason.Normal, policyVersion);
-                }
-
-                case KeySmState.DeliveredDown:
-                    // 自动重复或疑似重复 Down：无法可靠区分 → 默认放行（KSM-005/016）
-                    RepeatCandidates++;
-                    LastObservedDownMs = nowMs;
-                    return InputDecision.Pass(DecisionReason.RepeatedWhileHeld, policyVersion);
-
-                case KeySmState.SuppressedPress:
-                    // 已拦截这次 Press，重复的 Down 一并拦截（安全期内，KSM-006）
-                    BounceCandidates++;
-                    LastObservedDownMs = nowMs;
-                    return InputDecision.Suppress(DecisionReason.CandidateBounce, policyVersion,
-                        nowMs - LastObservedDownMs, double.MaxValue);
-
-                default:
-                    return InputDecision.Pass(DecisionReason.UnknownState, policyVersion);
-            }
+            return EvaluateDown(nowMs, thresholdMs, policyVersion, true);
         }
 
-        /// <summary>评估一次 Up。被拦截 Down 的配对 Up 一并拦截（含策略刚关闭后的清理，KSM-011）。</summary>
-        public InputDecision EvaluateUp(double nowMs, int policyVersion)
+        public InputDecision ObserveDown(double nowMs, double thresholdMs, int policyVersion)
         {
-            if (LastObservedDownMs != double.MinValue && nowMs < LastObservedDownMs)
+            return EvaluateDown(nowMs, thresholdMs, policyVersion, false);
+        }
+
+        private InputDecision EvaluateDown(double nowMs, double thresholdMs, int version, bool canSuppress)
+        {
+            if (HasTimeRegression(nowMs))
             {
-                // 时间倒退的 Up：放行且不更新（避免污染时间基准）
-                return InputDecision.Pass(DecisionReason.UnknownState, policyVersion);
+                Reset();
+                DeliverDown(nowMs);
+                return InputDecision.Pass(DecisionReason.UnknownState, version);
+            }
+
+            double gapDown = LastObservedDownMs == double.MinValue
+                ? double.MaxValue : nowMs - LastObservedDownMs;
+            LastObservedDownMs = nowMs;
+            if (State == KeySmState.DeliveredDown)
+            {
+                RepeatCandidates++;
+                return InputDecision.Pass(DecisionReason.RepeatedWhileHeld, version);
+            }
+
+            if (State == KeySmState.SuppressedPress)
+            {
+                if (nowMs - SuppressedPressStartedMs <= StuckPressExpiryMs)
+                {
+                    BounceCandidates++;
+                    return InputDecision.Suppress(DecisionReason.CandidateBounce, version, gapDown, double.MaxValue);
+                }
+                StaleRecoveries++;
+                Reset();
+                DeliverDown(nowMs);
+                return InputDecision.Pass(DecisionReason.UnknownState, version);
+            }
+
+            double gapUp;
+            if (IsChatterCandidate(nowMs, thresholdMs, out gapUp))
+            {
+                BounceCandidates++;
+                if (canSuppress)
+                {
+                    State = KeySmState.SuppressedPress;
+                    SuppressedPressStartedMs = nowMs;
+                    return InputDecision.Suppress(DecisionReason.CandidateBounce, version, gapDown, gapUp);
+                }
+
+                DeliverDown(nowMs);
+                InputDecision candidate = InputDecision.Pass(DecisionReason.CandidateBounce, version);
+                candidate.GapDownMs = gapDown;
+                candidate.GapUpMs = gapUp;
+                return candidate;
+            }
+
+            DeliverDown(nowMs);
+            return InputDecision.Pass(DecisionReason.Normal, version);
+        }
+
+        public InputDecision EvaluateUp(double nowMs, int version)
+        {
+            if (HasTimeRegression(nowMs))
+            {
+                Reset();
+                LastObservedUpMs = nowMs;
+                State = KeySmState.Unknown;
+                return InputDecision.Pass(DecisionReason.UnknownState, version);
             }
 
             LastObservedUpMs = nowMs;
-            switch (State)
+            KeySmState previous = State;
+            State = KeySmState.Idle;
+            if (previous == KeySmState.SuppressedPress)
             {
-                case KeySmState.DeliveredDown:
-                    State = KeySmState.Idle;
-                    LastDeliveredUpMs = nowMs;
-                    return InputDecision.Pass(DecisionReason.Normal, policyVersion);
-
-                case KeySmState.SuppressedPress:
-                    State = KeySmState.Idle; // 配对清理完成
-                    return InputDecision.Suppress(DecisionReason.SuppressedPairedRelease, policyVersion,
-                        double.MaxValue, double.MaxValue);
-
-                case KeySmState.Idle:
-                case KeySmState.Unknown:
-                default:
-                    State = KeySmState.Idle;
-                    return InputDecision.Pass(DecisionReason.UnknownState, policyVersion);
+                // 只有短促的被拦截按压能延展同一串弹跳。仍待配对的 Up 始终与原 Down 一起拦截。
+                if (nowMs - SuppressedPressStartedMs < LegacyPolicyAdapter.ChatterPressMaxMs)
+                {
+                    _lastSuppressedShortUpMs = nowMs;
+                }
+                else
+                {
+                    ClearReleasedCycle();
+                }
+                SuppressedPressStartedMs = double.MinValue;
+                return InputDecision.Suppress(DecisionReason.SuppressedPairedRelease, version,
+                    double.MaxValue, double.MaxValue);
             }
+
+            if (previous == KeySmState.DeliveredDown)
+            {
+                LastDeliveredUpMs = nowMs;
+                _lastSuppressedShortUpMs = double.MinValue;
+                return InputDecision.Pass(DecisionReason.Normal, version);
+            }
+
+            return InputDecision.Pass(DecisionReason.UnknownState, version);
         }
 
-        /// <summary>钩子重启：清临时状态，不保留任何“已拦截待配对”假设（KSM-013）。</summary>
+        internal void PrepareForPolicyTransition()
+        {
+            if (State == KeySmState.SuppressedPress) ClearReleasedCycle();
+            else Reset();
+        }
+
         public void Reset()
         {
             State = KeySmState.Idle;
-            LastDeliveredUpMs = double.MinValue;
-            LastDeliveredDownMs = double.MinValue;
             LastObservedDownMs = double.MinValue;
             LastObservedUpMs = double.MinValue;
             SuppressedPressStartedMs = double.MinValue;
+            ClearReleasedCycle();
+        }
+
+        private bool IsChatterCandidate(double nowMs, double thresholdMs, out double gapUp)
+        {
+            gapUp = double.MaxValue;
+            if (LastDeliveredUpMs == double.MinValue || LastDeliveredDownMs == double.MinValue ||
+                LastDeliveredUpMs - LastDeliveredDownMs >= LegacyPolicyAdapter.ChatterPressMaxMs)
+                return false;
+
+            if (nowMs - LastDeliveredUpMs >= MaxBurstWindowMs) return false;
+            double reference = _lastSuppressedShortUpMs == double.MinValue
+                ? LastDeliveredUpMs : _lastSuppressedShortUpMs;
+            gapUp = nowMs - reference;
+            return gapUp >= 0 && gapUp < thresholdMs;
+        }
+
+        private bool HasTimeRegression(double nowMs)
+        {
+            return nowMs < LastObservedDownMs || nowMs < LastObservedUpMs;
+        }
+
+        private void DeliverDown(double nowMs)
+        {
+            ClearReleasedCycle();
+            LastObservedDownMs = nowMs;
+            LastDeliveredDownMs = nowMs;
+            State = KeySmState.DeliveredDown;
+        }
+
+        private void ClearReleasedCycle()
+        {
+            LastDeliveredUpMs = double.MinValue;
+            LastDeliveredDownMs = double.MinValue;
+            _lastSuppressedShortUpMs = double.MinValue;
         }
     }
 }

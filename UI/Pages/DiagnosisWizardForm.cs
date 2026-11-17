@@ -1,7 +1,6 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using KeyInsight.Core.Input;
 using KeyInsight.Core.Policy;
@@ -16,8 +15,17 @@ namespace KeyInsight.UI.Pages
     /// 4. 只有用户点「应用」才写入单键策略并切到单键保守模式；
     /// 5. 失焦 / 关闭 / 异常一律恢复原策略（FormClosed 中兜底）。
     /// </summary>
-    public sealed class DiagnosisWizardForm : Form
+    public sealed class DiagnosisWizardForm : Form, IMessageFilter
     {
+        private const int WmKeyDown = 0x0100;
+        private const int WmKeyUp = 0x0101;
+        private const int WmSysKeyDown = 0x0104;
+        private const int WmSysKeyUp = 0x0105;
+        private const int NumpadEnter = 0x1000D;
+
+        [DllImport("user32.dll")]
+        private static extern uint GetMessageTime();
+
         private readonly IShellActions _shell;
         private readonly int _vk;
         private readonly Label _progress;
@@ -25,10 +33,15 @@ namespace KeyInsight.UI.Pages
         private readonly TextBox _box;
         private readonly Button _apply;
 
-        private readonly List<double> _downTimes = new List<double>();
-        private readonly List<double> _cycles = new List<double>();
-        private double _lastDeliveredDown = -1;
-        private double _lastDeliveredUp = -1;
+        private int _presses;
+        private int _completedPresses;
+        private int _candidateCount;
+        private uint _minCandidate;
+        private uint _maxCandidate;
+        private uint _downMs;
+        private uint _previousUpMs;
+        private PhysicalKeyId _capturedKey;
+        private bool _previousPressWasShort;
         private bool _isDown;
         private bool _capturing;
         private int _suggestedThreshold;
@@ -47,7 +60,6 @@ namespace KeyInsight.UI.Pages
             BackColor = Theme.P.Card;
             ForeColor = Theme.P.Text;
             Font = Ui.Body;
-            KeyPreview = true;
             TopMost = true;
 
             Label title = new Label();
@@ -56,18 +68,18 @@ namespace KeyInsight.UI.Pages
             Controls.Add(title);
 
             Label hint = new Label();
-            hint.Text = "建议：单击 20 次 → 快速双击 10 组 → 长按 5 轮。采集期间防抖过滤临时暂停（关闭后自动恢复）。";
+            hint.Text = "建议：单击 20 次 → 快速双击 10 组 → 长按 5 轮。停止采集后自动恢复防抖过滤。";
             hint.SetBounds(16, 34, 430, 32);
             hint.ForeColor = Theme.P.Muted;
             Controls.Add(hint);
 
             _box = new TextBox();
             _box.Multiline = true;
+            _box.ReadOnly = true;
             _box.ScrollBars = ScrollBars.Vertical;
             _box.SetBounds(16, 70, 428, 110);
             _box.BackColor = Theme.P.CardAlt;
             _box.ForeColor = Theme.P.Text;
-            _box.Text = "";
             Controls.Add(_box);
 
             _progress = new Label();
@@ -105,150 +117,129 @@ namespace KeyInsight.UI.Pages
             close.DialogResult = DialogResult.Cancel;
             Controls.Add(close);
 
-            SuspendFiltering();
-            _box.KeyDown += OnCaptureKeyDown;
-            _box.KeyUp += OnCaptureKeyUp;
-            FormClosed += delegate { RestorePolicy(); };
-            Deactivate += delegate
-            {
-                // 失焦：停止采集（会话取消），策略仍恢复在 FormClosed
-                _capturing = false;
-                UpdateProgress();
-            };
+            _box.LostFocus += delegate { StopCapture(); };
+            Deactivate += delegate { StopCapture(); };
         }
 
         private void SuspendFiltering()
         {
-            PolicySnapshot cur = PolicyController.Current;
-            Dictionary<KeyInsight.Core.Input.PhysicalKeyId, PerKeyRule> rules =
-                new Dictionary<KeyInsight.Core.Input.PhysicalKeyId, PerKeyRule>();
-            foreach (KeyValuePair<KeyInsight.Core.Input.PhysicalKeyId, PerKeyRule> kv in cur.SnapshotRules())
-            {
-                rules[kv.Key] = kv.Value;
-            }
-            PolicySnapshot suspended = new PolicySnapshot(cur.Version, cur.Mode, false, cur.SkipInjected,
-                cur.GlobalThresholdMs, rules, cur.FilterAppWhitelist);
-            PolicyController.Update(suspended);
+            PolicyController.Update(PolicyController.Current.WithoutFiltering());
         }
 
-        private void RestorePolicy()
+        private void StopCapture()
         {
+            if (!_capturing) return;
             _capturing = false;
+            Application.RemoveMessageFilter(this);
             PolicyController.Refresh(_shell.Cfg);
+            UpdateProgress();
         }
 
         private void StartCapture()
         {
-            _downTimes.Clear();
-            _cycles.Clear();
-            _lastDeliveredDown = -1;
-            _lastDeliveredUp = -1;
+            _presses = 0;
+            _completedPresses = 0;
+            _candidateCount = 0;
+            _minCandidate = uint.MaxValue;
+            _maxCandidate = 0;
+            _previousPressWasShort = false;
             _isDown = false;
-            _capturing = true;
             _suggestedThreshold = 0;
             _apply.Enabled = false;
             _result.Text = "";
-            _box.Text = "";
-            _box.Focus();
+            if (_box.Focus() && !_capturing)
+            {
+                SuspendFiltering();
+                _capturing = true;
+                Application.AddMessageFilter(this);
+            }
             UpdateProgress();
         }
 
-        private void OnCaptureKeyDown(object sender, KeyEventArgs e)
+        bool IMessageFilter.PreFilterMessage(ref Message message)
         {
-            if (!_capturing) return;
-            if ((int)e.KeyValue != _vk) return;
-            e.SuppressKeyPress = true;
-            e.Handled = true;
-            double now = Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
+            bool down = message.Msg == WmKeyDown || message.Msg == WmSysKeyDown;
+            if (!down && message.Msg != WmKeyUp && message.Msg != WmSysKeyUp) return false;
+            if (!_capturing || message.HWnd != _box.Handle) return false;
 
-            if (_isDown)
+            int vk = message.WParam.ToInt32();
+            uint keyData = unchecked((uint)message.LParam.ToInt64());
+            int scan = (int)((keyData >> 16) & 0xFF);
+            bool extended = (keyData & 0x01000000) != 0;
+            if (vk == 0x10) vk = scan == 0x36 ? 0xA1 : 0xA0;
+            if (vk == 0x11) vk = extended ? 0xA3 : 0xA2;
+            if (vk == 0x12) vk = extended ? 0xA5 : 0xA4;
+            int statsVk = vk == 0x0D && extended ? NumpadEnter : vk;
+            if (statsVk != _vk) return false;
+
+            PhysicalKeyId key = new PhysicalKeyId(vk, scan, extended);
+            if (_presses > 0 && !key.Equals(_capturedKey)) return true;
+            uint now = GetMessageTime();
+            if (down)
             {
-                return; // 自动重复：仅记录首次 Down
+                if (_isDown || (keyData & 0x40000000) != 0) return true;
+                _isDown = true;
+                _capturedKey = key;
+                _presses++;
+                uint gap = unchecked(now - _previousUpMs);
+                if (_previousPressWasShort && gap < LegacyPolicyAdapter.ChatterPressMaxMs)
+                {
+                    _candidateCount++;
+                    _minCandidate = Math.Min(_minCandidate, gap);
+                    _maxCandidate = Math.Max(_maxCandidate, gap);
+                }
+                _downMs = now;
             }
-            _isDown = true;
-            _downTimes.Add(now);
-
-            if (_lastDeliveredUp >= 0)
+            else
             {
-                double cycleGap = now - _lastDeliveredUp;
-                if (cycleGap < 500) _cycles.Add(cycleGap);
+                if (!_isDown) return true;
+                _isDown = false;
+                _completedPresses++;
+                _previousUpMs = now;
+                _previousPressWasShort = unchecked(now - _downMs) < LegacyPolicyAdapter.ChatterPressMaxMs;
             }
-            _lastDeliveredDown = now;
             UpdateProgress();
-        }
-
-        private void OnCaptureKeyUp(object sender, KeyEventArgs e)
-        {
-            if (!_capturing) return;
-            if ((int)e.KeyValue != _vk) return;
-            e.SuppressKeyPress = true;
-            e.Handled = true;
-            double now = Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
-            _isDown = false;
-            _lastDeliveredUp = now;
-            UpdateProgress();
+            return true;
         }
 
         private void UpdateProgress()
         {
-            _progress.Text = "已采集按下：" + _downTimes.Count + " 次 · 按压周期：" + _cycles.Count +
+            _progress.Text = "已采集按下：" + _presses + " 次 · 完整按压：" + _completedPresses +
                 (_capturing ? " · 采集中…" : "");
         }
 
         private void Analyze()
         {
-            _capturing = false;
-            UpdateProgress();
+            StopCapture();
 
-            if (_cycles.Count < 8)
+            if (_completedPresses < 8)
             {
-                _result.Text = "样本不足：" + _cycles.Count + " 个按压周期（至少需要 8 个）。请按提示多测几次。";
+                _result.Text = "样本不足：" + _completedPresses + " 个完整按压（至少需要 8 个）。请按提示多测几次。";
                 return;
             }
 
-            long candidates = 0;
-            double maxCandidate = 0;
-            for (int i = 0; i < _cycles.Count; i++)
+            if (_candidateCount == 0)
             {
-                if (_cycles[i] < 30)
-                {
-                    candidates++;
-                    if (_cycles[i] > maxCandidate) maxCandidate = _cycles[i];
-                }
-            }
-
-            if (candidates == 0)
-            {
-                _result.Text = "样本 " + _cycles.Count + " 个按压周期，未发现短间隔候选。\n" +
-                    "该键无需启用单键过滤，建议仅观察。";
+                _result.Text = "样本 " + _completedPresses + " 个完整按压，未观察到短促按压后的快速重按。";
                 _suggestedThreshold = 0;
                 _apply.Enabled = false;
                 return;
             }
 
-            int suggested = (int)Math.Ceiling(maxCandidate) + 5;
-            if (suggested < 10) suggested = 10;
-            if (suggested > 30) suggested = 30;
+            int suggested = Math.Max(10, (int)_maxCandidate + 1);
             _suggestedThreshold = suggested;
-            _result.Text = "样本 " + _cycles.Count + " 个按压周期，短间隔候选 " + candidates +
-                " 个（最小 " + MinCycle().ToString("F1") + " ms，最大候选 " + maxCandidate.ToString("F1") + " ms）。\n" +
+            _result.Text = "样本 " + _completedPresses + " 个完整按压，候选 " + _candidateCount +
+                " 个（释放间隔 " + _minCandidate + "–" + _maxCandidate + " ms）。\n" +
                 "建议阈值：" + suggested + " ms（预测，需实机确认；应用后可在按键健康页随时关闭）。";
             _apply.Enabled = true;
-        }
-
-        private double MinCycle()
-        {
-            double min = double.MaxValue;
-            for (int i = 0; i < _cycles.Count; i++) if (_cycles[i] < min) min = _cycles[i];
-            return min == double.MaxValue ? 0 : min;
         }
 
         private void ApplySuggestion()
         {
             if (_suggestedThreshold <= 0 || _shell.KeyPolicies == null) return;
             _shell.KeyPolicies.BeginEdit();
-            int scan = InputIdentityResolver.CanonicalScanFor(_vk);
-            KeyPolicyEntry entry = _shell.KeyPolicies.GetOrCreate(_vk, scan, false);
+            KeyPolicyEntry entry = _shell.KeyPolicies.GetOrCreate(
+                _capturedKey.VirtualKey, _capturedKey.ScanCode, _capturedKey.Extended);
             entry.ThresholdMs = _suggestedThreshold;
             entry.Enabled = true;
             entry.EnabledAtUtcTicks = DateTime.UtcNow.Ticks;
@@ -260,15 +251,17 @@ namespace KeyInsight.UI.Pages
                 _shell.Cfg.Save();
             }
             _shell.RefreshPolicy();
-            MessageBox.Show(this, "已启用 " + KeyLayout.LabelFor(_vk) + " 的单键保守过滤（阈值 " +
-                _suggestedThreshold + " ms，模式：单键保守）。可在按键健康页随时关闭。",
+            string status = _shell.Cfg.FilterEnabled ? "已启用 " : "已保存 ";
+            string detail = _shell.Cfg.FilterEnabled ? "可在按键健康页随时调整。" : "打开防抖总开关后生效。";
+            MessageBox.Show(this, status + KeyLayout.LabelFor(_vk) + " 的单键保守过滤（阈值 " +
+                _suggestedThreshold + " ms）。" + detail,
                 "KeyInsight", MessageBoxButtons.OK, MessageBoxIcon.Information);
             _apply.Enabled = false;
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            _capturing = false;
+            StopCapture();
             base.OnFormClosing(e);
         }
     }

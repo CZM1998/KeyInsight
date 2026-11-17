@@ -43,6 +43,16 @@ namespace KeyInsight.Tests.Core
             TestRegistry.Add("Core", "KSM_AppWhitelist", KSM_AppWhitelist);
             TestRegistry.Add("Core", "KSM_LegacyParityViaEngine", KSM_LegacyParityViaEngine);
             TestRegistry.Add("Core", "KSM021_ComboProtection", KSM021_ComboProtection);
+            TestRegistry.Add("Core", "KSM022_PendingPairSurvivesModeSwitch", KSM022_PendingPairSurvivesModeSwitch);
+            TestRegistry.Add("Core", "KSM023_PendingPairSurvivesRuleRemoval", KSM023_PendingPairSurvivesRuleRemoval);
+            TestRegistry.Add("Core", "KSM024_WhitelistPairAndStaleReset", KSM024_WhitelistPairAndStaleReset);
+            TestRegistry.Add("Core", "KSM025_ObserveOnlyDownCandidates", KSM025_ObserveOnlyDownCandidates);
+            TestRegistry.Add("Core", "KSM026_ShadowDoesNotLeak", KSM026_ShadowDoesNotLeak);
+            TestRegistry.Add("Core", "KSM027_MultiBounceBurstExtended", KSM027_MultiBounceBurstExtended);
+            TestRegistry.Add("Core", "KSM028_BurstLongPressNotExtended", KSM028_BurstLongPressNotExtended);
+            TestRegistry.Add("Core", "KSM029_RepeatGapAndRegressionReset", KSM029_RepeatGapAndRegressionReset);
+            TestRegistry.Add("Core", "KSM030_WhitelistClearsLegacyHistory", KSM030_WhitelistClearsLegacyHistory);
+            TestRegistry.Add("Core", "KSM031_WhitelistEpochInvalidatesOtherKeys", KSM031_WhitelistEpochInvalidatesOtherKeys);
         }
 
         // —— 回放工具 ——
@@ -68,12 +78,19 @@ namespace KeyInsight.Tests.Core
 
         private static InputDecision Eval(KeyInsightPolicyEngine engine, PhysicalKeyId key, bool down, double t, int vk)
         {
+            return EvalEx(engine, key, down, t, vk, "chrome", false);
+        }
+
+        private static InputDecision EvalEx(KeyInsightPolicyEngine engine, PhysicalKeyId key, bool down,
+            double t, int vk, string app, bool injected)
+        {
             NormalizedKeyEvent ev = new NormalizedKeyEvent();
             ev.Key = key;
             ev.Action = down ? InputAction.Down : InputAction.Up;
             ev.MonoMs = t;
             ev.LegacyVk = vk;
-            ev.AppName = "chrome";
+            ev.Injected = injected;
+            ev.AppName = app;
             return engine.Evaluate(ev);
         }
 
@@ -323,6 +340,11 @@ namespace KeyInsight.Tests.Core
             // 后续放行
             InputDecision next = Eval(e, KeyE, true, 60 + KeyStateMachine.StuckPressExpiryMs + 150, VkE);
             Check.True(next.Kind == DecisionKind.Pass, "subsequent passes");
+
+            KeyInsightPolicyEngine held = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSS", Decisions(held, new double[] { 0, 2, 5, 4000 },
+                new[] { true, false, true, false }, KeyE), "late Up still pairs with the suppressed Down");
         }
 
         private static void KSM019()
@@ -398,6 +420,271 @@ namespace KeyInsight.Tests.Core
             KeyInsightPolicyEngine e3 = new KeyInsightPolicyEngine(Snapshot(PolicyMode.PerKeyConservative, 40, true, RulesFor(KeyE), null, true));
             Check.Equal("PPPPP", Decisions(e3, new double[] { 0, 300, 600, 900, 920 },
                 new[] { true, true, true, false, true }, KeyE), "KSM-021 re-press after hold passes");
+        }
+
+        private static void KSM022_PendingPairSurvivesModeSwitch()
+        {
+            // ObserveOnly 模式切换发生在被拦截 Press 仍未释放时：配对 Up 必须继续拦截，
+            // 但 Up 不得计入 BounceCandidates，且后续 Down 按观察模式重新开始。
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.True(Eval(e, KeyE, true, 0, VkE).Kind == DecisionKind.Pass, "mode switch: first down");
+            Check.True(Eval(e, KeyE, false, 2, VkE).Kind == DecisionKind.Pass, "mode switch: first up");
+            Check.True(Eval(e, KeyE, true, 5, VkE).Kind == DecisionKind.Suppress, "mode switch: pending press");
+
+            e.UpdatePolicy(Snapshot(PolicyMode.ObserveOnly, 20, true, RulesFor(KeyE), null, true));
+            InputDecision pairedUp = Eval(e, KeyE, false, 10, VkE);
+            Check.True(pairedUp.Kind == DecisionKind.Suppress &&
+                pairedUp.Reason == DecisionReason.SuppressedPairedRelease,
+                "pending pair survives mode switch");
+            Check.Equal(1L, e.BounceCandidates, "paired Up is not a bounce candidate");
+
+            InputDecision nextDown = Eval(e, KeyE, true, 100, VkE);
+            InputDecision nextUp = Eval(e, KeyE, false, 102, VkE);
+            Check.True(nextDown.Kind == DecisionKind.Pass && nextUp.Kind == DecisionKind.Pass,
+                "new observe-mode cycle honors new mode");
+            Check.Equal(1L, e.BounceCandidates, "new observed cycle without delivered history is not a candidate");
+
+            // 切到 Legacy 模式同样保留配对责任；切换后的首个 Legacy Down 从清空状态开始。
+            KeyInsightPolicyEngine legacy = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Eval(legacy, KeyE, true, 0, VkE);
+            Eval(legacy, KeyE, false, 2, VkE);
+            Eval(legacy, KeyE, true, 5, VkE);
+            legacy.UpdatePolicy(Snapshot(PolicyMode.LegacyCompatible, 25, true, RulesFor(KeyE), null, true));
+            Check.True(Eval(legacy, KeyE, false, 10, VkE).Kind == DecisionKind.Suppress,
+                "pending pair survives switch to legacy");
+            Check.True(Eval(legacy, KeyE, true, 200, VkE).Kind == DecisionKind.Pass,
+                "new legacy press starts without stale conservative history");
+        }
+
+        private static void KSM023_PendingPairSurvivesRuleRemoval()
+        {
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Eval(e, KeyE, true, 0, VkE);
+            Eval(e, KeyE, false, 2, VkE);
+            Check.True(Eval(e, KeyE, true, 5, VkE).Kind == DecisionKind.Suppress, "rule removal: pending press");
+
+            e.UpdatePolicy(Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(), null, true));
+            InputDecision pairedUp = Eval(e, KeyE, false, 10, VkE);
+            Check.True(pairedUp.Kind == DecisionKind.Suppress, "pending pair survives rule removal");
+            Check.Equal(1L, e.BounceCandidates, "rule removal: paired Up not counted");
+
+            Check.True(Eval(e, KeyE, true, 20, VkE).Kind == DecisionKind.Pass,
+                "removed rule: next Down passes");
+            Check.True(Eval(e, KeyE, false, 22, VkE).Kind == DecisionKind.Pass,
+                "removed rule: next Up passes");
+        }
+
+        private static void KSM024_WhitelistPairAndStaleReset()
+        {
+            string[] whitelist = new string[] { "game" };
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), whitelist, true));
+            EvalEx(e, KeyE, true, 0, VkE, "chrome", false);
+            EvalEx(e, KeyE, false, 2, VkE, "chrome", false);
+            Check.True(EvalEx(e, KeyE, true, 5, VkE, "chrome", false).Kind == DecisionKind.Suppress,
+                "whitelist transition: pending press");
+
+            InputDecision pairedUp = EvalEx(e, KeyE, false, 10, VkE, "game", false);
+            Check.True(pairedUp.Kind == DecisionKind.Suppress,
+                "pending pair survives foreground entering whitelist");
+            Check.Equal(1L, e.BounceCandidates, "whitelist paired Up not counted");
+
+            Check.True(EvalEx(e, KeyE, true, 20, VkE, "game", false).Kind == DecisionKind.Pass,
+                "whitelisted new Down passes");
+            Check.True(EvalEx(e, KeyE, false, 22, VkE, "game", false).Kind == DecisionKind.Pass,
+                "whitelisted Up passes");
+            Check.True(EvalEx(e, KeyE, true, 25, VkE, "chrome", false).Kind == DecisionKind.Pass,
+                "leaving whitelist must not reuse stale burst history");
+            Check.True(EvalEx(e, KeyE, false, 27, VkE, "chrome", false).Kind == DecisionKind.Pass,
+                "new non-whitelist cycle passes");
+            Check.Equal(1L, e.BounceCandidates, "whitelist bypass creates no candidates");
+            Check.True(e.AppWhitelistPasses >= 2, "whitelist passes counted");
+        }
+
+        private static void KSM025_ObserveOnlyDownCandidates()
+        {
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.ObserveOnly, 20, true, RulesFor(KeyE), null, true));
+
+            Check.True(Eval(e, KeyE, true, 0, VkE).Kind == DecisionKind.Pass, "observe first down");
+            Check.True(Eval(e, KeyE, false, 2, VkE).Kind == DecisionKind.Pass, "observe first up");
+            Check.Equal(0L, e.BounceCandidates, "no candidate without prior delivered cycle");
+
+            InputDecision candidateDown = Eval(e, KeyE, true, 5, VkE);
+            Check.True(candidateDown.Kind == DecisionKind.Pass &&
+                candidateDown.Reason == DecisionReason.CandidateBounce,
+                "observe reports candidate on Down but passes");
+            Check.Equal(1L, e.BounceCandidates, "candidate counted once on Down");
+
+            InputDecision pairedLikeUp = Eval(e, KeyE, false, 7, VkE);
+            Check.True(pairedLikeUp.Kind == DecisionKind.Pass &&
+                pairedLikeUp.Reason != DecisionReason.CandidateBounce,
+                "observe Up is never a hypothetical suppression");
+            Check.Equal(1L, e.BounceCandidates, "observe Up does not increment candidates");
+
+            // 观察模式必须把候选 Down 也当作实际已投递，后续判定跟随最新真实周期。
+            Check.True(Eval(e, KeyE, true, 10, VkE).Kind == DecisionKind.Pass, "observe second candidate Down");
+            Check.Equal(2L, e.BounceCandidates, "second candidate counted from actual delivered cycle");
+            Eval(e, KeyE, false, 12, VkE);
+            Check.True(Eval(e, KeyE, true, 100, VkE).Kind == DecisionKind.Pass, "old delivered cycle expired");
+            Check.Equal(2L, e.BounceCandidates, "no candidate after actual gap exceeds threshold");
+
+            KeyInsightPolicyEngine held = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.ObserveOnly, 20, true, RulesFor(KeyE), null, true));
+            Eval(held, KeyE, true, 0, VkE);
+            Eval(held, KeyE, true, 500, VkE);
+            Eval(held, KeyE, false, 506, VkE);
+            Eval(held, KeyE, true, 510, VkE);
+            Check.Equal(0L, held.BounceCandidates, "typematic repeat does not shorten a long press");
+        }
+
+        private static void KSM026_ShadowDoesNotLeak()
+        {
+            Dictionary<PhysicalKeyId, PerKeyRule> rules = new Dictionary<PhysicalKeyId, PerKeyRule>();
+            PerKeyRule wide = new PerKeyRule();
+            wide.Enabled = true;
+            wide.ThresholdMs = 100;
+            rules[KeyE] = wide;
+
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.LegacyCompatible, 25, true, rules, null, true));
+            Eval(e, KeyE, true, 0, VkE);
+            Eval(e, KeyE, false, 2, VkE);
+            Check.True(Eval(e, KeyE, true, 42, VkE).Kind == DecisionKind.Pass,
+                "legacy decision unchanged while shadow disagrees");
+            Check.True(e.ShadowLegacyPassConservativeSuppress >= 1,
+                "shadow did predict suppression without affecting real decision");
+
+            e.UpdatePolicy(Snapshot(PolicyMode.PerKeyConservative, 25, true, rules, null, true));
+            Check.True(Eval(e, KeyE, false, 50, VkE).Kind == DecisionKind.Pass,
+                "hypothetical shadow Up is not imported as real pending press");
+            Check.True(Eval(e, KeyE, true, 60, VkE).Kind == DecisionKind.Pass,
+                "first real conservative press starts clean after mode switch");
+        }
+
+        private static void KSM027_MultiBounceBurstExtended()
+        {
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            string actual = Decisions(e,
+                new double[] { 0, 2, 5, 6, 25, 26, 45, 46, 65, 66, 85, 86, 101, 102, 120, 122 },
+                new[] { true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false },
+                KeyE);
+
+            // D25 已距原始真实 Up(2) 23ms，超过 20ms 阈值；短促被拦截周期持续延长参考点。
+            Check.Equal("PP" + new string('S', 12) + "PP", actual, "multi-bounce burst stays suppressed");
+            Check.Equal(6L, e.BounceCandidates, "six suppressed Downs, paired Ups not counted");
+
+            // 延长后的释放间隔仍然严格小于阈值：恰好 20ms 必须放行。
+            KeyInsightPolicyEngine gapBoundary = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSSPP",
+                Decisions(gapBoundary, new double[] { 0, 2, 5, 6, 26, 28 },
+                    new[] { true, false, true, false, true, false }, KeyE),
+                "extended gap at threshold passes");
+
+            // 总弹跳窗口严格锚定真实 Up(2) 且小于 100ms：102ms 处必须放行。
+            KeyInsightPolicyEngine maxBoundary = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            string bounded = Decisions(maxBoundary,
+                new double[] { 0, 2, 5, 6, 25, 26, 45, 46, 65, 66, 85, 86, 100, 101, 102, 103 },
+                new[] { true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false },
+                KeyE);
+            Check.Equal("PP" + new string('S', 12) + "PP", bounded, "burst window bounded at 100ms");
+        }
+
+        private static void KSM028_BurstLongPressNotExtended()
+        {
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSSPP",
+                Decisions(e, new double[] { 0, 2, 5, 40, 45, 47 },
+                    new[] { true, false, true, false, true, false }, KeyE),
+                "long suppressed press must not extend burst reference");
+            Check.Equal(1L, e.BounceCandidates, "only initial short Down candidate counted");
+
+            // 同样的长按在较宽阈值下也不能借用更早的短周期继续过滤。
+            KeyInsightPolicyEngine wide = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 40, true, RulesFor(KeyE), null, true));
+            Check.Equal("PPSSPP",
+                Decisions(wide, new double[] { 0, 2, 5, 40, 45, 47 },
+                    new[] { true, false, true, false, true, false }, KeyE),
+                "long suppressed press resets delivered cycle under wide threshold");
+            Check.Equal(1L, wide.BounceCandidates, "wide threshold long press not re-filtered");
+        }
+
+        private static void KSM029_RepeatGapAndRegressionReset()
+        {
+            KeyStateMachine sm = new KeyStateMachine();
+            sm.EvaluateDown(0, 20, 1);
+            sm.EvaluateUp(2, 1);
+            Check.True(sm.EvaluateDown(5, 20, 1).Kind == DecisionKind.Suppress, "repeat gap: first suppressed down");
+            InputDecision repeated = sm.EvaluateDown(8, 20, 1);
+            Check.True(repeated.Kind == DecisionKind.Suppress, "repeat gap: second suppressed down");
+            Check.Near(3, repeated.GapDownMs, 0.0001, "GapDown captured before LastObservedDown overwrite");
+
+            KeyStateMachine reg = new KeyStateMachine();
+            reg.EvaluateDown(100, 20, 1);
+            reg.EvaluateUp(200, 1);
+            InputDecision backwardsDown = reg.EvaluateDown(50, 20, 1);
+            Check.True(backwardsDown.Kind == DecisionKind.Pass &&
+                backwardsDown.Reason == DecisionReason.UnknownState,
+                "out-of-order Down fails open");
+            Check.True(reg.State == KeySmState.DeliveredDown, "regressed Down starts a coherent new cycle");
+            Check.True(reg.LastDeliveredUpMs == double.MinValue &&
+                reg.LastObservedUpMs == double.MinValue,
+                "regression clears stale Up timestamps");
+
+            Check.True(reg.EvaluateUp(60, 1).Kind == DecisionKind.Pass, "completed new cycle Up passes");
+            Check.Near(60, reg.LastDeliveredUpMs, 0.0001, "new delivered Up timestamp coherent");
+            Check.True(reg.EvaluateDown(65, 20, 1).Kind == DecisionKind.Suppress,
+                "filtering requires and then uses a complete post-reset cycle");
+        }
+
+        private static void KSM030_WhitelistClearsLegacyHistory()
+        {
+            string[] whitelist = new string[] { "game" };
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.LegacyCompatible, 25, true, null, whitelist, true));
+            Check.True(EvalEx(e, KeyE, true, 0, VkE, "chrome", false).Kind == DecisionKind.Pass, "legacy first down");
+            Check.True(EvalEx(e, KeyE, false, 2, VkE, "chrome", false).Kind == DecisionKind.Pass, "legacy first up");
+            Check.True(EvalEx(e, KeyE, true, 4, VkE, "game", false).Kind == DecisionKind.Pass, "whitelist legacy event");
+            Check.True(EvalEx(e, KeyE, false, 6, VkE, "game", false).Kind == DecisionKind.Pass, "whitelist legacy up");
+            Check.True(EvalEx(e, KeyE, true, 20, VkE, "chrome", false).Kind == DecisionKind.Pass,
+                "leaving whitelist must not suppress from pre-whitelist legacy cycle");
+        }
+
+        private static void KSM031_WhitelistEpochInvalidatesOtherKeys()
+        {
+            string[] whitelist = new string[] { "game" };
+            KeyInsightPolicyEngine e = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), whitelist, true));
+
+            // E 处于真实待配对 Press；随后白名单应用只产生别的按键事件。
+            EvalEx(e, KeyE, true, 0, VkE, "chrome", false);
+            EvalEx(e, KeyE, false, 2, VkE, "chrome", false);
+            Check.True(EvalEx(e, KeyE, true, 5, VkE, "chrome", false).Kind == DecisionKind.Suppress,
+                "epoch: pending E press");
+            EvalEx(e, KeyR, true, 6, VkR, "game", false);
+            EvalEx(e, KeyR, false, 7, VkR, "game", false);
+
+            Check.True(EvalEx(e, KeyE, false, 10, VkE, "chrome", false).Kind == DecisionKind.Suppress,
+                "pending pair survives whitelist bypass on another key");
+            Check.True(EvalEx(e, KeyE, true, 20, VkE, "chrome", false).Kind == DecisionKind.Pass,
+                "post-whitelist new press has no stale burst reference");
+
+            // 非 pending 的旧短周期同样不能跨白名单旁路继续生效。
+            KeyInsightPolicyEngine e2 = new KeyInsightPolicyEngine(
+                Snapshot(PolicyMode.PerKeyConservative, 20, true, RulesFor(KeyE), whitelist, true));
+            EvalEx(e2, KeyE, true, 0, VkE, "chrome", false);
+            EvalEx(e2, KeyE, false, 2, VkE, "chrome", false);
+            EvalEx(e2, KeyR, true, 4, VkR, "game", false);
+            EvalEx(e2, KeyR, false, 6, VkR, "game", false);
+            Check.True(EvalEx(e2, KeyE, true, 8, VkE, "chrome", false).Kind == DecisionKind.Pass,
+                "whitelist bypass invalidates other-key delivered history lazily");
         }
 
         private static void KSM_LegacyParityViaEngine()

@@ -52,6 +52,13 @@ namespace KeyInsight.Core.Policy
             return _perKey.TryGetValue(key, out rule);
         }
 
+        internal PolicySnapshot WithoutFiltering()
+        {
+            if (!FilterEnabled) return this;
+            return new PolicySnapshot(Version, Mode, false, SkipInjected, GlobalThresholdMs,
+                _perKey, FilterAppWhitelist);
+        }
+
         /// <summary>规则全集的只读拷贝（快照不可变，供 PolicyController 复制/序列化）。</summary>
         public List<KeyValuePair<PhysicalKeyId, PerKeyRule>> SnapshotRules()
         {

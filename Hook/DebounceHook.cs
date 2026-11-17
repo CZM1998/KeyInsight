@@ -87,6 +87,8 @@ namespace KeyInsight.Hook
         private readonly ShortcutObserver _shortcuts = new ShortcutObserver();
         private readonly Dictionary<int, long> _lastNearMiss = new Dictionary<int, long>();
         private readonly object _logGate = new object();
+        private PolicySnapshot _appliedSnapshot;
+        private bool _captureEnabled = true;
 
         private HookProc _proc;
         private IntPtr _hook = IntPtr.Zero;
@@ -109,7 +111,8 @@ namespace KeyInsight.Hook
         {
             _cfg = cfg;
             _sink = sink;
-            _engine = new KeyInsightPolicyEngine(PolicyController.Current);
+            _appliedSnapshot = PolicyController.Current;
+            _engine = new KeyInsightPolicyEngine(_appliedSnapshot);
             if (cfg.LogSwallowed)
             {
                 try
@@ -142,12 +145,10 @@ namespace KeyInsight.Hook
         /// <summary>回调耗时直方图（2 的幂微秒桶，采样每 256 个事件取 1 个）。只读快照。</summary>
         public long[] LatencyBucketsSnapshot()
         {
-            lock (_logGate)
-            {
-                long[] copy = new long[_latencyBuckets.Length];
-                Array.Copy(_latencyBuckets, copy, copy.Length);
-                return copy;
-            }
+            long[] copy = new long[_latencyBuckets.Length];
+            for (int i = 0; i < copy.Length; i++)
+                copy[i] = Interlocked.Read(ref _latencyBuckets[i]);
+            return copy;
         }
 
         public long LatencySamples { get { return Interlocked.Read(ref _latencySamples); } }
@@ -207,134 +208,124 @@ namespace KeyInsight.Hook
 
         private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            long startTicks = 0;
-            bool sample = (Interlocked.Increment(ref _eventCounter) % LatencySampleEvery) == 0;
-            if (sample) startTicks = Stopwatch.GetTimestamp();
+            if (nCode < 0) return CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            int msg = wParam.ToInt32();
+            bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            if (!down && msg != WM_KEYUP && msg != WM_SYSKEYUP)
+                return CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            bool sample = (++_eventCounter & (LatencySampleEvery - 1)) == 0;
+            long startTicks = sample ? Stopwatch.GetTimestamp() : 0;
+            bool suppress = false;
 
             try
             {
-                if (nCode >= 0)
+                double nowMs = MonotonicClock.NowMs;
+                long utcTicks = WallClock.UtcNow.Ticks;
+                Interlocked.Exchange(ref _lastEventTicks, utcTicks);
+                KBDLLHOOKSTRUCT k = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+                bool injected = (k.flags & LLKHF_INJECTED) != 0;
+                PolicySnapshot snap = PolicyController.Current;
+                bool captureEnabled = _cfg.CaptureEnabled;
+                if (_appliedSnapshot != snap || _captureEnabled != captureEnabled)
                 {
-                    int msg = wParam.ToInt32();
-                    bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-                    bool up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
-
-                    if (down || up)
-                    {
-                        Interlocked.Exchange(ref _lastEventTicks, DateTime.UtcNow.Ticks);
-                        KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-                        bool injected = (k.flags & LLKHF_INJECTED) != 0;
-                        PolicySnapshot snap = PolicyController.Current;
-                        // 快照更替同步到引擎（版本号比较 + 整体引用替换；钩子线程不触碰配置文件）
-                        if (_engine.CurrentSnapshot.Version != snap.Version)
-                        {
-                            _engine.UpdatePolicy(snap);
-                        }
-
-                        if (_cfg.LogAllKeys && down)
-                        {
-                            LogLine(DateTime.Now.ToString("HH:mm:ss.fff") +
-                                    " down vk=0x" + k.vkCode.ToString("X2") +
-                                    " scan=0x" + k.scanCode.ToString("X2") +
-                                    " flags=0x" + k.flags.ToString("X") +
-                                    " injected=" + (injected ? "1" : "0") +
-                                    " app=" + ForegroundTracker.CurrentApp);
-                        }
-
-                        if (snap.SkipInjected && injected)
-                        {
-                            // 注入旁路：不进策略、不进统计、不进状态（与 v2.1.x 一致）
-                        }
-                        else if (!_cfg.CaptureEnabled)
-                        {
-                            // 采集关闭：只放行（P0-02 预留语义）
-                        }
-                        else
-                        {
-                            double nowMs = MonotonicClock.NowMs;
-                            NormalizedKeyEvent ev = new NormalizedKeyEvent();
-                            ev.Key = InputIdentityResolver.Resolve((int)k.vkCode, (int)k.scanCode, k.flags);
-                            ev.Action = down ? InputAction.Down : InputAction.Up;
-                            ev.MonoMs = nowMs;
-                            ev.UtcTicks = WallClock.UtcNow.Ticks;
-                            ev.Injected = injected;
-                            ev.LegacyVk = StatsVk(k);
-                            ev.AppName = ForegroundTracker.CurrentApp;
-
-                            // P2-04：快捷键白名单聚合（只记组合名与次数，独立于过滤决策）
-                            string combo = _shortcuts.Observe((int)k.vkCode, down, (k.flags & 0x01) != 0);
-                            if (combo != null && _sink != null)
-                            {
-                                TelemetryEvent se = new TelemetryEvent();
-                                se.Kind = TelemetryKind.Shortcut;
-                                se.App = combo;
-                                se.UtcTicks = ev.UtcTicks;
-                                _sink.TryPublish(se);
-                            }
-
-                            InputDecision decision = _engine.Evaluate(ev);
-
-                            if (decision.Kind == DecisionKind.Suppress)
-                            {
-                                Interlocked.Increment(ref _swallowed);
-                                LogLine(DateTime.Now.ToString("HH:mm:ss.fff") +
-                                        " swallow vk=0x" + k.vkCode.ToString("X2") +
-                                        " scan=0x" + k.scanCode.ToString("X2") +
-                                        " gapDown=" + Fmt(decision.GapDownMs) +
-                                        " gapUp=" + Fmt(decision.GapUpMs) +
-                                        " reason=" + decision.Reason +
-                                        " pv=" + decision.PolicyVersion +
-                                        " app=" + ev.AppName);
-
-                                if (down && _sink != null)
-                                {
-                                    TelemetryEvent sw = new TelemetryEvent();
-                                    sw.Kind = TelemetryKind.Swallow;
-                                    sw.Key = ev.Key;
-                                    sw.LegacyVk = ev.LegacyVk;
-                                    sw.UtcTicks = ev.UtcTicks;
-                                    sw.App = ev.AppName;
-                                    sw.GapDownMs = decision.GapDownMs == double.MaxValue ? 0 : decision.GapDownMs;
-                                    sw.GapShortUpMs = decision.GapUpMs == double.MaxValue ? 0 : decision.GapUpMs;
-                                    _sink.TryPublish(sw);
-                                }
-                                return (IntPtr)1;
-                            }
-
-                            if (down)
-                            {
-                                Interlocked.Increment(ref _seen);
-
-                                // nearmiss 诊断行（旧口径保留，仅日志）
-                                if (decision.GapUpMs < 60 || decision.GapDownMs < 45)
-                                {
-                                    LogNearMiss(ev.LegacyVk, decision.GapDownMs, decision.GapUpMs);
-                                }
-
-                                if (_sink != null)
-                                {
-                                    TelemetryEvent ke = new TelemetryEvent();
-                                    ke.Kind = TelemetryKind.Down;
-                                    ke.Key = ev.Key;
-                                    ke.LegacyVk = ev.LegacyVk;
-                                    ke.UtcTicks = ev.UtcTicks;
-                                    ke.App = ev.AppName;
-                                    _sink.TryPublish(ke);
-                                }
-                            }
-                            // Up：v2.1.x 口径不产生 Up 统计，保持不变
-                        }
-                    }
+                    _engine.UpdatePolicy(captureEnabled ? snap : snap.WithoutFiltering());
+                    _appliedSnapshot = snap;
+                    if (_captureEnabled != captureEnabled) _shortcuts.ResetModifiers();
+                    _captureEnabled = captureEnabled;
                 }
+
+                if (!(snap.SkipInjected && injected))
+                {
+                    NormalizedKeyEvent ev = new NormalizedKeyEvent();
+                    ev.Key = InputIdentityResolver.Resolve((int)k.vkCode, (int)k.scanCode, k.flags);
+                    ev.Action = down ? InputAction.Down : InputAction.Up;
+                    ev.MonoMs = nowMs;
+                    ev.UtcTicks = utcTicks;
+                    ev.Injected = injected;
+                    ev.LegacyVk = StatsVk(k);
+                    ev.AppName = ForegroundTracker.CurrentApp;
+
+                    InputDecision decision = _engine.Evaluate(ev);
+                    suppress = decision.Kind == DecisionKind.Suppress;
+                    if (captureEnabled) PublishDiagnostics(k, ev, decision, down, suppress);
+                }
+                if (captureEnabled && _cfg.LogAllKeys && down && _log != null)
+                    LogLine(DateTime.Now.ToString("HH:mm:ss.fff") +
+                            " down vk=0x" + k.vkCode.ToString("X2") +
+                            " scan=0x" + k.scanCode.ToString("X2") +
+                            " flags=0x" + k.flags.ToString("X") +
+                            " injected=" + (injected ? "1" : "0") +
+                            " app=" + ForegroundTracker.CurrentApp);
             }
             catch (Exception ex)
             {
                 LogLine("ERR " + ex.GetType().Name + ": " + ex.Message);
             }
 
-            if (sample) RecordLatency(Stopwatch.GetTimestamp() - startTicks);
+            finally
+            {
+                if (sample) RecordLatency(Stopwatch.GetTimestamp() - startTicks);
+            }
 
-            return CallNextHookEx(_hook, nCode, wParam, lParam);
+            return suppress ? (IntPtr)1 : CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+
+        private void PublishDiagnostics(KBDLLHOOKSTRUCT k, NormalizedKeyEvent ev, InputDecision decision,
+            bool down, bool suppress)
+        {
+            if (down)
+            {
+                if (suppress) Interlocked.Increment(ref _swallowed);
+                else Interlocked.Increment(ref _seen);
+            }
+
+            if (_sink != null)
+            {
+                string combo = _shortcuts.Observe((int)k.vkCode, down, (k.flags & 0x01) != 0);
+                if (combo != null)
+                {
+                    TelemetryEvent shortcut = new TelemetryEvent();
+                    shortcut.Kind = TelemetryKind.Shortcut;
+                    shortcut.App = combo;
+                    shortcut.UtcTicks = ev.UtcTicks;
+                    _sink.TryPublish(shortcut);
+                }
+
+                if (down)
+                {
+                    TelemetryEvent key = new TelemetryEvent();
+                    key.Kind = suppress ? TelemetryKind.Swallow : TelemetryKind.Down;
+                    key.Key = ev.Key;
+                    key.LegacyVk = ev.LegacyVk;
+                    key.UtcTicks = ev.UtcTicks;
+                    key.App = ev.AppName;
+                    if (suppress)
+                    {
+                        key.GapDownMs = decision.GapDownMs == double.MaxValue ? 0 : decision.GapDownMs;
+                        key.GapShortUpMs = decision.GapUpMs == double.MaxValue ? 0 : decision.GapUpMs;
+                    }
+                    _sink.TryPublish(key);
+                }
+            }
+
+            if (_log == null) return;
+            if (suppress)
+            {
+                LogLine(DateTime.Now.ToString("HH:mm:ss.fff") +
+                        " swallow vk=0x" + k.vkCode.ToString("X2") +
+                        " scan=0x" + k.scanCode.ToString("X2") +
+                        " gapDown=" + Fmt(decision.GapDownMs) +
+                        " gapUp=" + Fmt(decision.GapUpMs) +
+                        " reason=" + decision.Reason +
+                        " pv=" + decision.PolicyVersion +
+                        " app=" + ev.AppName);
+            }
+            else if (down && (decision.GapUpMs < 60 || decision.GapDownMs < 45))
+            {
+                LogNearMiss(ev.LegacyVk, decision.GapDownMs, decision.GapUpMs);
+            }
         }
 
         private void RecordLatency(long elapsedTicks)
@@ -347,10 +338,7 @@ namespace KeyInsight.Hook
                 v /= 2.0;
                 bucket++;
             }
-            lock (_logGate)
-            {
-                _latencyBuckets[bucket]++;
-            }
+            Interlocked.Increment(ref _latencyBuckets[bucket]);
             Interlocked.Increment(ref _latencySamples);
         }
 
@@ -407,6 +395,7 @@ namespace KeyInsight.Hook
                 _threadId = 0;
                 _hook = IntPtr.Zero;
                 _engine.ResetForHookRestart();
+                _shortcuts.ResetModifiers();
                 _lastNearMiss.Clear();
             }
         }

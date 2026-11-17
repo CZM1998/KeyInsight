@@ -30,6 +30,37 @@ namespace KeyInsight.Tests.Core
             TestRegistry.Add("Storage", "TEL004_LateEventsCrossMonth", TEL004_LateEventsCrossMonth);
             TestRegistry.Add("Storage", "PR1_AsyncSnapshotEqualsSync", PR1_AsyncSnapshotEqualsSync);
             TestRegistry.Add("Core", "METRICS_Percentiles", METRICS_Percentiles);
+            TestRegistry.Add("Core", "MOUSE_PairedBounceCandidates", MousePairedBounceCandidates);
+        }
+
+        private static void MousePairedBounceCandidates()
+        {
+            MouseBounceDetector detector = new MouseBounceDetector(3);
+            uint pressMs;
+            detector.ObserveDown(1, 0);
+            Check.True(!detector.ObserveUp(1, 10, out pressMs), "isolated short click");
+            detector.ObserveDown(2, 12);
+            Check.True(!detector.ObserveUp(2, 15, out pressMs), "other button cannot provide the prior release");
+            detector.ObserveDown(1, 17);
+            Check.True(detector.ObserveUp(1, 24, out pressMs), "paired quick re-click");
+            detector.ObserveDown(1, 27);
+            Check.True(detector.ObserveUp(1, 35, out pressMs), "second candidate in the same burst");
+            detector.ObserveDown(1, 40);
+            detector.ObserveDown(1, 97);
+            Check.True(!detector.ObserveUp(1, 100, out pressMs), "repeated down does not truncate a held press");
+            Check.Equal(60U, pressMs, "held duration");
+            detector.ObserveDown(1, 120);
+            Check.True(!detector.ObserveUp(1, 125, out pressMs), "strict release threshold");
+            detector.ObserveDown(1, 130);
+            Check.True(!detector.ObserveUp(1, 150, out pressMs), "strict press threshold");
+
+            detector.Reset();
+            detector.ObserveDown(1, uint.MaxValue - 15);
+            Check.True(!detector.ObserveUp(1, uint.MaxValue - 8, out pressMs), "reset clears the prior release");
+            detector.ObserveDown(1, uint.MaxValue - 2);
+            Check.True(detector.ObserveUp(1, 2, out pressMs), "pair spans native time rollover");
+            Check.Equal(5U, pressMs, "rollover duration");
+            Check.True(!detector.ObserveUp(1, 5, out pressMs), "orphan release");
         }
 
         private static void STO015_SidecarCleanupOnDelete()
@@ -198,14 +229,17 @@ namespace KeyInsight.Tests.Core
         private static void POLICY_VersionSwitchBounded()
         {
             // 属性测试：多次策略版本切换后，状态机字典只随“不同按键数”增长（不随版本数增长）
+            PhysicalKeyId key = new PhysicalKeyId(0x45, 0x12, false);
+            PhysicalKeyId unconfigured = new PhysicalKeyId(0x52, 0x13, false);
+            Dictionary<PhysicalKeyId, PerKeyRule> rules = new Dictionary<PhysicalKeyId, PerKeyRule>();
+            rules.Add(key, new PerKeyRule { Enabled = true, ThresholdMs = 20 });
             PolicySnapshot snap = new PolicySnapshot(1, PolicyMode.PerKeyConservative, true, true, 20,
-                null, null);
+                rules, null);
             KeyInsightPolicyEngine engine = new KeyInsightPolicyEngine(snap);
 
-            PhysicalKeyId key = new PhysicalKeyId(0x45, 0x12, false);
             for (int v = 0; v < 50; v++)
             {
-                PolicySnapshot s = new PolicySnapshot(v + 2, PolicyMode.PerKeyConservative, true, true, 20, null, null);
+                PolicySnapshot s = new PolicySnapshot(v + 2, PolicyMode.PerKeyConservative, true, true, 20, rules, null);
                 engine.UpdatePolicy(s);
                 NormalizedKeyEvent ev = new NormalizedKeyEvent();
                 ev.Key = key;
@@ -216,6 +250,12 @@ namespace KeyInsight.Tests.Core
                 engine.Evaluate(ev);
                 ev.Action = InputAction.Up;
                 ev.MonoMs = v * 100 + 10;
+                engine.Evaluate(ev);
+                ev.Key = unconfigured;
+                ev.LegacyVk = unconfigured.VirtualKey;
+                ev.Action = InputAction.Down;
+                engine.Evaluate(ev);
+                ev.Action = InputAction.Up;
                 engine.Evaluate(ev);
             }
             Check.Equal(1, engine.MachineCount, "50 version switches, still one machine: " + engine.MachineCount);

@@ -99,10 +99,10 @@ namespace KeyInsight.Hook
         private long _events;
 
         // P2-03：鼠标 Up 周期与微动候选（仅检测，不拦截）。状态只被鼠标钩子线程访问。
-        private readonly long[] _lastDownTicks = new long[10];   // button id -> ticks
-        private readonly bool[] _isDown = new bool[10];
+        private const int ButtonSlots = 10;
+        private readonly MouseBounceDetector _bounceDetector = new MouseBounceDetector(ButtonSlots);
         private long _upCount;
-        private readonly long[] _lastCycleTicks = new long[10];
+        private readonly long[] _lastCycleLogTicks = new long[ButtonSlots];
         private long _cycleCandidates;
         private long _rawWheelDelta;                             // 原始 delta 累计（正负抵消后的净滚动量，V2 口径）
         private long _rawWheelEvents;
@@ -207,37 +207,31 @@ namespace KeyInsight.Hook
                     bool isWheel = msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL;
                     if (!isDownMsg && !isUpMsg && !isWheel) return CallNextHookEx(_hook, nCode, wParam, lParam);
 
-                    Interlocked.Exchange(ref _lastEventTicks, DateTime.UtcNow.Ticks);
-                    MSLLHOOKSTRUCT m = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-                    if (_cfg.SkipInjected && (m.flags & LLMHF_INJECTED) != 0)
+                    long utcTicks = WallClock.UtcNow.Ticks;
+                    Interlocked.Exchange(ref _lastEventTicks, utcTicks);
+                    MSLLHOOKSTRUCT m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+                    bool injected = (m.flags & LLMHF_INJECTED) != 0;
+                    if (_cfg.SkipInjected && injected)
                         return CallNextHookEx(_hook, nCode, wParam, lParam);
 
                     // P2-03：Up 周期观测（仅检测不拦截；不进入旧统计口径）
                     if (isUpMsg)
                     {
                         int upButton = ButtonFromMessage(msg, m);
-                        if (upButton > 0 && upButton < 10)
+                        if (upButton > 0 && upButton < ButtonSlots)
                         {
                             Interlocked.Increment(ref _upCount);
-                            bool wasDown = _isDown[upButton];
-                            _isDown[upButton] = false;
-                            if (wasDown)
+                            uint pressMs;
+                            if (!injected &&
+                                _bounceDetector.ObserveUp(upButton, m.time, out pressMs))
                             {
-                                long pressTicks = Stopwatch.GetTimestamp() - _lastDownTicks[upButton];
-                                double pressMs = pressTicks * 1000.0 / Stopwatch.Frequency;
-                                // 微动故障候选：异常短的按下周期（<40ms，正常点击很难低于此值）
-                                if (pressMs < 40)
+                                Interlocked.Increment(ref _cycleCandidates);
+                                long now = Stopwatch.GetTimestamp();
+                                long last = _lastCycleLogTicks[upButton];
+                                if (_log != null && (last == 0 || now - last >= Stopwatch.Frequency / 2))
                                 {
-                                    long nowT = Stopwatch.GetTimestamp();
-                                    bool hasLast = _lastCycleTicks[upButton] != 0;
-                                    if (!hasLast ||
-                                        (nowT - _lastCycleTicks[upButton]) * 1000.0 / Stopwatch.Frequency >= 500)
-                                    {
-                                        _lastCycleTicks[upButton] = nowT;
-                                        Interlocked.Increment(ref _cycleCandidates);
-                                        Log("cycle-candidate button=" + upButton +
-                                            " pressMs=" + pressMs.ToString("F1"));
-                                    }
+                                    _lastCycleLogTicks[upButton] = now;
+                                    Log("cycle-candidate button=" + upButton + " pressMs=" + pressMs);
                                 }
                             }
                         }
@@ -288,19 +282,17 @@ namespace KeyInsight.Hook
                         Interlocked.Add(ref _rawWheelDelta, rawDelta);
                     }
 
+                    string app = _sink != null ? ForegroundTracker.CurrentApp : null;
                     if (button > 0)
                     {
                         // P2-03 观测：按下周期起点（供 Up 配对）
-                        if (isDownMsg && button < 10)
+                        if (isDownMsg && button < ButtonSlots && !injected)
                         {
-                            _lastDownTicks[button] = Stopwatch.GetTimestamp();
-                            _isDown[button] = true;
+                            _bounceDetector.ObserveDown(button, m.time);
                         }
 
                         if (_sink != null)
                         {
-                            long utcTicks = WallClock.UtcNow.Ticks;
-                            string app = ForegroundTracker.CurrentApp;
                             TelemetryEvent e = new TelemetryEvent();
                             e.Kind = isWheel ? TelemetryKind.MouseWheel : TelemetryKind.MouseDown;
                             e.Button = button;
@@ -319,8 +311,8 @@ namespace KeyInsight.Hook
                         TelemetryEvent raw = new TelemetryEvent();
                         raw.Kind = TelemetryKind.WheelRaw;
                         raw.Delta = rawDelta;
-                        raw.UtcTicks = WallClock.UtcNow.Ticks;
-                        raw.App = ForegroundTracker.CurrentApp;
+                        raw.UtcTicks = utcTicks;
+                        raw.App = app;
                         _sink.TryPublish(raw);
                     }
                 }
@@ -362,6 +354,8 @@ namespace KeyInsight.Hook
                 _thread = null;
                 _threadId = 0;
                 _hook = IntPtr.Zero;
+                _bounceDetector.Reset();
+                Array.Clear(_lastCycleLogTicks, 0, _lastCycleLogTicks.Length);
             }
         }
 
