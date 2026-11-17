@@ -26,7 +26,7 @@ namespace KeyInsight.UI.Pages
         private Rectangle _clearRect;
         private Rectangle _manageRect;
         private Rectangle _checkUpdateRect;
-        private int _busyPhase;
+        private Rectangle _releaseUpdateRect;
         private Rectangle _autoUpdateRect;
         private Rectangle[] _monthDeleteRects = new Rectangle[0];
         private string[] _monthKeys = new string[0];
@@ -34,26 +34,11 @@ namespace KeyInsight.UI.Pages
 
         public override string Title { get { return "设置与数据"; } }
         public override string Subtitle { get { return "防抖、启动、主题，以及本地数据的清理与导出"; } }
-
-        private readonly Timer _animTimer;
+        protected override int MinContentHeight { get { return 712; } }
 
         public SettingsPage(IShellActions shell)
         {
             _shell = shell;
-            // 更新检查动画：busy 期间 120ms 重绘；空闲时停止
-            _animTimer = new Timer();
-            _animTimer.Interval = 120;
-            _animTimer.Tick += delegate
-            {
-                if (_shell.UpdateCheckBusy) Invalidate();
-                else _animTimer.Stop();
-            };
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            if (_shell.UpdateCheckBusy && !_animTimer.Enabled) _animTimer.Start();
         }
 
         protected override void Draw(Graphics g)
@@ -216,51 +201,34 @@ namespace KeyInsight.UI.Pages
         private void DrawAbout(Graphics g, Rectangle card, Palette p)
         {
             Charts.Card(g, card, p);
-            Ui.TextLeft(g, "关于与隐私", Ui.Section, p.Text, new Rectangle(card.X + 18, card.Y + 14, card.Width - 36, 24));
-            Ui.TextLeft(g, "本工具只记录虚拟键码、按键次数、时间与前台进程名；不记录窗口标题，不记录输入内容，不上传任何数据。",
-                Ui.BodySmall, p.Muted, new Rectangle(card.X + 18, card.Y + 48, card.Width - 36, 22));
-            Ui.TextLeft(g, "数据全部保存在本机，你可以按月删除，或点「清空全部数据」彻底清除。",
-                Ui.BodySmall, p.Muted, new Rectangle(card.X + 18, card.Y + 74, card.Width - 36, 22));
-            Ui.TextLeft(g, "KeyInsight v" + AppInfo.Version + " · 防抖基于 WH_KEYBOARD_LL · 使用前行者 X87S 实测校准",
-                Ui.Label, p.Dim, new Rectangle(card.X + 18, card.Bottom - 30, card.Width - 200, 18));
-
-            _autoUpdateRect = new Rectangle(card.Right - 188, card.Bottom - 42, 40, 22);
-            Charts.Switch(g, _autoUpdateRect, _shell.AutoCheckUpdates, p);
-            Ui.TextLeft(g, "自动检查更新", Ui.BodySmall, p.Muted,
-                new Rectangle(card.Right - 300, card.Bottom - 40, 108, 20));
+            Ui.TextLeft(g, "关于与更新", Ui.Section, p.Text, new Rectangle(card.X + 18, card.Y + 14, card.Width - 36, 24));
+            Ui.TextRight(g, "KeyInsight v" + AppInfo.Version, Ui.Label, p.Dim,
+                new Rectangle(card.Right - 180, card.Y + 14, 162, 24));
+            Ui.TextLeftEllipsis(g, "按键统计与前台进程名保存在本机。窗口标题和输入内容不采集。",
+                Ui.BodySmall, p.Muted, new Rectangle(card.X + 18, card.Y + 47, card.Width - 36, 22));
 
             bool busy = _shell.UpdateCheckBusy;
-            _checkUpdateRect = new Rectangle(card.Right - 140, card.Bottom - 52, 104, 28);
-            if (busy)
-            {
-                // 动画：转圈点阵（画在按钮文字前）
-                if (_busyPhase == 0) _busyPhase = 1;
-                Charts.Button(g, _checkUpdateRect, "检查中" + new string('.', (Environment.TickCount / 400) % 4), false, p);
-                int cx = _checkUpdateRect.X + 16;
-                int cy = _checkUpdateRect.Y + _checkUpdateRect.Height / 2;
-                for (int i = 0; i < 6; i++)
-                {
-                    double ang = (Environment.TickCount / 120.0) * Math.PI / 3 + i * Math.PI / 3;
-                    int dx = (int)Math.Round(Math.Cos(ang) * 5);
-                    int dy = (int)Math.Round(Math.Sin(ang) * 5);
-                    int alpha = 255 - i * 34;
-                    Ui.DrawDot(g, cx + dx, cy + dy, 2, Ui.WithAlpha(p.Accent1, alpha));
-                }
-            }
-            else
-            {
-                Charts.Button(g, _checkUpdateRect, "检查更新", false, p);
-            }
+            _autoUpdateRect = new Rectangle(card.Right - 176, card.Y + 85, 40, 22);
+            Charts.Switch(g, _autoUpdateRect, _shell.AutoCheckUpdates, p);
+            Ui.TextLeft(g, "自动检查更新", Ui.BodySmall, p.Muted,
+                new Rectangle(card.Right - 282, card.Y + 86, 104, 20));
+
+            _checkUpdateRect = new Rectangle(card.Right - 122, card.Y + 82, 104, 28);
+            Charts.Button(g, _checkUpdateRect, busy ? "更新进行中…" : "检查更新", false, p);
 
             string checkResult = _shell.LastUpdateCheckResult;
+            bool hasReleaseLink = !busy && !string.IsNullOrEmpty(_shell.UpdateReleaseUrl);
+            _releaseUpdateRect = hasReleaseLink
+                ? new Rectangle(card.Right - 122, card.Y + 119, 104, 28) : Rectangle.Empty;
             if (!string.IsNullOrEmpty(checkResult))
             {
                 Color rc = checkResult.StartsWith("发现", StringComparison.Ordinal) ? p.Good
-                    : checkResult.StartsWith("检查失败", StringComparison.Ordinal) ? p.Bad : p.Muted;
-                Ui.TextLeftEllipsis(g, checkResult, Ui.Label, rc,
-                    new Rectangle(card.X + 18, card.Bottom - 50, card.Width - 36 - 150, 18));
+                    : checkResult.IndexOf("失败", StringComparison.Ordinal) >= 0 ? p.Bad
+                    : busy ? p.Accent1 : p.Muted;
+                Ui.TextLeftEllipsis(g, checkResult, Ui.BodySmall, rc,
+                    new Rectangle(card.X + 18, card.Y + 121, card.Width - 36 - (hasReleaseLink ? 114 : 0), 24));
             }
-
+            if (hasReleaseLink) Charts.Button(g, _releaseUpdateRect, "打开发布页", false, p);
         }
 
         private bool IsWhitelisted(string app)
@@ -310,7 +278,13 @@ namespace KeyInsight.UI.Pages
 
             if (_checkUpdateRect.Contains(pt))
             {
-                _shell.CheckUpdates();
+                if (!_shell.UpdateCheckBusy) _shell.CheckUpdates();
+                return;
+            }
+            if (_releaseUpdateRect.Contains(pt) && !string.IsNullOrEmpty(_shell.UpdateReleaseUrl))
+            {
+                try { Process.Start(new ProcessStartInfo(_shell.UpdateReleaseUrl) { UseShellExecute = true }); }
+                catch (Exception ex) { Dialogs.Error(FindForm(), "打开发布页失败", ex.Message); }
                 return;
             }
             if (_autoUpdateRect.Contains(pt))

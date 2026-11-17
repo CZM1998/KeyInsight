@@ -9,12 +9,14 @@ namespace KeyInsight.Updater
     /// <summary>
     /// 独立更新器 Helper（路线图 PR-6 / §7.4）：主程序退出后执行安装事务，
     /// 不在主程序进程内覆盖使用中的文件。
-    /// 流程：等待主进程退出 → 备份 → 应用（Setup 静默安装 / portable zip 原子替换）
+    /// 流程：等待主进程退出 → 备份程序文件 → 应用安装包
     /// → 启动新版本 → 等待健康心跳 → 成功清理 / 失败回滚。
     /// 绝不触碰用户统计数据（KDS / 侧车 / 配置 / 维护记录）。
     /// </summary>
     internal static class UpdaterMain
     {
+        private static readonly string[] PackageFiles = { "KeyInsight.exe", "KeyInsight.Updater.exe", "README.md", "LICENSE" };
+
         private static int Main(string[] args)
         {
             // 参数规范：
@@ -23,8 +25,9 @@ namespace KeyInsight.Updater
             //   --package <setup|portable> 包形态
             //   --target <dir>            目标程序目录
             //   --health-nonce <text>     健康检查 nonce
+            //   --health-path <path>      主程序写入心跳的文件
             //   --health-timeout <sec>    健康检查超时
-            string installer = "", package = "setup", target = "", nonce = "";
+            string installer = "", package = "setup", target = "", nonce = "", healthPath = "";
             int waitPid = 0, healthTimeoutSec = 60;
             for (int i = 0; i < args.Length - 1; i++)
             {
@@ -34,18 +37,24 @@ namespace KeyInsight.Updater
                 else if (a == "--package") package = args[++i];
                 else if (a == "--target") target = args[++i];
                 else if (a == "--health-nonce") nonce = args[++i];
+                else if (a == "--health-path") healthPath = args[++i];
                 else if (a == "--health-timeout") int.TryParse(args[++i], out healthTimeoutSec);
             }
-            if (string.IsNullOrEmpty(installer) || string.IsNullOrEmpty(target) || waitPid <= 0)
+            if (string.IsNullOrEmpty(installer) || string.IsNullOrEmpty(target) ||
+                string.IsNullOrEmpty(nonce) || waitPid <= 0)
             {
                 return 2;
             }
 
-            string backupDir = target + ".backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            if (string.IsNullOrEmpty(healthPath)) healthPath = Path.Combine(target, "data", "v2", "health.json");
+            string backupDir = target + ".backup-" + Guid.NewGuid().ToString("N");
+            Process restartedApp = null;
+            bool backedUp = false;
             try
             {
                 WaitForExit(waitPid, 15000);
-                CopyDirectory(target, backupDir, true);
+                BackupProgramFiles(target, backupDir);
+                backedUp = true;
 
                 if (string.Equals(package, "portable", StringComparison.OrdinalIgnoreCase))
                 {
@@ -53,7 +62,7 @@ namespace KeyInsight.Updater
                 }
                 else
                 {
-                    RunInstaller(installer);
+                    RunInstaller(installer, target);
                 }
 
                 string newExe = Path.Combine(target, "KeyInsight.exe");
@@ -61,11 +70,11 @@ namespace KeyInsight.Updater
                 ProcessStartInfo psi = new ProcessStartInfo(newExe,
                     "--health-nonce \"" + nonce + "\" --health-timeout " + healthTimeoutSec);
                 psi.WorkingDirectory = target;
-                Process.Start(psi);
+                restartedApp = Process.Start(psi);
 
-                if (WaitHealthHeartbeat(target, nonce, healthTimeoutSec))
+                if (WaitHealthHeartbeat(healthPath, nonce, healthTimeoutSec, restartedApp))
                 {
-                    WriteResult(target, "ok");
+                    WriteResult(healthPath, "ok");
                     return 0;
                 }
 
@@ -75,15 +84,27 @@ namespace KeyInsight.Updater
             {
                 try
                 {
-                    Rollback(target, backupDir);
-                    WriteResult(target, "rolled-back: " + ex.Message);
+                    if (backedUp)
+                    {
+                        if (restartedApp != null && !restartedApp.HasExited)
+                        {
+                            restartedApp.Kill();
+                            if (!restartedApp.WaitForExit(5000)) throw new IOException("updated process did not stop");
+                        }
+                        Rollback(target, backupDir);
+                    }
+                    WriteResult(healthPath, (backedUp ? "rolled-back: " : "not applied: ") + ex.Message);
                 }
                 catch (Exception rbEx)
                 {
-                    WriteResult(target, "ROLLBACK-FAILED: " + rbEx.Message + " (orig: " + ex.Message + ")");
+                    WriteResult(healthPath, "ROLLBACK-FAILED: " + rbEx.Message + " (orig: " + ex.Message + ")");
                     return 3;
                 }
                 return 1;
+            }
+            finally
+            {
+                if (restartedApp != null) restartedApp.Dispose();
             }
         }
 
@@ -106,22 +127,28 @@ namespace KeyInsight.Updater
             throw new IOException("main process did not exit in time");
         }
 
-        private static void CopyDirectory(string src, string dst, bool excludeDataDir)
+        private static System.Collections.Generic.IEnumerable<string> ProgramFiles(string directory)
         {
-            if (!Directory.Exists(dst)) Directory.CreateDirectory(dst);
-            foreach (string file in Directory.GetFiles(src, "*", SearchOption.AllDirectories))
+            foreach (string name in PackageFiles)
             {
-                string rel = file.Substring(src.Length).TrimStart('\\', '/');
-                if (excludeDataDir && rel.StartsWith("data\\", StringComparison.OrdinalIgnoreCase)) continue;
-                string dstFile = Path.Combine(dst, rel);
-                Directory.CreateDirectory(Path.GetDirectoryName(dstFile));
-                File.Copy(file, dstFile, true);
+                string path = Path.Combine(directory, name);
+                if (File.Exists(path)) yield return path;
             }
+            foreach (string path in Directory.GetFiles(directory, "unins*.exe")) yield return path;
+            foreach (string path in Directory.GetFiles(directory, "unins*.dat")) yield return path;
         }
 
-        private static void RunInstaller(string installer)
+        private static void BackupProgramFiles(string target, string backupDir)
         {
-            ProcessStartInfo psi = new ProcessStartInfo(installer, "/SILENT /NORESTART");
+            Directory.CreateDirectory(backupDir);
+            foreach (string path in ProgramFiles(target))
+                File.Copy(path, Path.Combine(backupDir, Path.GetFileName(path)));
+        }
+
+        private static void RunInstaller(string installer, string target)
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(installer,
+                "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=\"" + target + "\"");
             using (Process p = Process.Start(psi))
             {
                 if (!p.WaitForExit(300000)) throw new IOException("installer timeout");
@@ -131,27 +158,27 @@ namespace KeyInsight.Updater
 
         private static void ExtractZip(string zipPath, string target)
         {
-            string staging = target + ".staging";
-            if (Directory.Exists(staging)) Directory.Delete(staging, true);
-            ZipFile.ExtractToDirectory(zipPath, staging);
-            string old = target + ".old";
-            if (Directory.Exists(old)) Directory.Delete(old, true);
-            if (Directory.Exists(target)) Directory.Move(target, old);
+            string staging = Path.Combine(Path.GetTempPath(), "KeyInsight-package-" + Guid.NewGuid().ToString("N"));
             try
             {
-                Directory.Move(staging, target);
-                Directory.Delete(old, true);
+                ZipFile.ExtractToDirectory(zipPath, staging);
+                if (!File.Exists(Path.Combine(staging, "KeyInsight.exe")))
+                    throw new IOException("portable package is missing KeyInsight.exe");
+                foreach (string name in PackageFiles)
+                {
+                    string source = Path.Combine(staging, name);
+                    if (File.Exists(source)) File.Copy(source, Path.Combine(target, name), true);
+                }
             }
-            catch
+            finally
             {
-                if (Directory.Exists(old) && !Directory.Exists(target)) Directory.Move(old, target);
-                throw;
+                try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+                catch { }
             }
         }
 
-        private static bool WaitHealthHeartbeat(string target, string nonce, int timeoutSec)
+        private static bool WaitHealthHeartbeat(string healthPath, string nonce, int timeoutSec, Process restartedApp)
         {
-            string healthPath = Path.Combine(target, "data", "v2", "health.json");
             DateTime end = DateTime.UtcNow.AddSeconds(timeoutSec);
             while (DateTime.UtcNow < end)
             {
@@ -164,6 +191,7 @@ namespace KeyInsight.Updater
                     }
                 }
                 catch { }
+                if (restartedApp.HasExited) return false;
                 Thread.Sleep(500);
             }
             return false;
@@ -171,21 +199,19 @@ namespace KeyInsight.Updater
 
         private static void Rollback(string target, string backupDir)
         {
-            if (!Directory.Exists(backupDir)) return;
-            if (Directory.Exists(target))
+            foreach (string path in ProgramFiles(target))
             {
-                string damaged = target + ".damaged";
-                if (Directory.Exists(damaged)) Directory.Delete(damaged, true);
-                Directory.Move(target, damaged);
+                if (!File.Exists(Path.Combine(backupDir, Path.GetFileName(path)))) File.Delete(path);
             }
-            Directory.Move(backupDir, target);
+            foreach (string path in ProgramFiles(backupDir))
+                File.Copy(path, Path.Combine(target, Path.GetFileName(path)), true);
         }
 
-        private static void WriteResult(string target, string result)
+        private static void WriteResult(string healthPath, string result)
         {
             try
             {
-                File.WriteAllText(Path.Combine(target, "data", "v2", "last-update-result.txt"),
+                File.WriteAllText(Path.Combine(Path.GetDirectoryName(healthPath), "last-update-result.txt"),
                     DateTime.UtcNow.ToString("o") + " " + result);
             }
             catch { }

@@ -35,6 +35,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\KeyInsight.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\KeyInsight.Updater.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -44,4 +45,4 @@ Name: "{group}\Uninstall KeyInsight"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\KeyInsight"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch KeyInsight"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--show-dashboard"; Description: "Launch KeyInsight"; Flags: nowait postinstall skipifsilent

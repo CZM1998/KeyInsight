@@ -128,6 +128,9 @@ namespace KeyInsight.Update.Routing
 
         public static string ClassifyError(Exception ex)
         {
+            RouteFetchException routeError = ex as RouteFetchException;
+            if (routeError != null) return routeError.Category;
+
             WebException we = ex as WebException;
             if (we != null)
             {
@@ -148,11 +151,13 @@ namespace KeyInsight.Update.Routing
                     case WebExceptionStatus.ConnectionClosed: return "Connect";
                     case WebExceptionStatus.SecureChannelFailure: return "TLS";
                     case WebExceptionStatus.Timeout: return "Timeout";
+                    case WebExceptionStatus.RequestCanceled: return "Timeout";
                     default: return we.Status.ToString();
                 }
             }
             if (ex is System.Security.Cryptography.CryptographicException) return "Signature";
             if (ex is InvalidOperationException) return "Signature";
+            if (ex is OperationCanceledException) return "Timeout";
             if (ex is UnauthorizedAccessException) return "DiskAccess";
             if (ex is IOException) return "IO";
             return "Other";
@@ -235,7 +240,25 @@ namespace KeyInsight.Update.Routing
         public const string RepoOwner = "CZM1998";
         public const string RepoName = "KeyInsight";
         public const string UpdateAssetName = "KeyInsight-update.json";
-        public const string UpdateSigName = "KeyInsight-update.sig";
+        // 发布脚本上传 KeyInsight-update.json.sig；旧版 .sig 仍作为兼容候选。
+        public const string UpdateSigName = "KeyInsight-update.json.sig";
+        public const string LegacyUpdateSigName = "KeyInsight-update.sig";
+
+        /// <summary>GitHub REST latest release（稳定版元数据兜底，不用于下载）。</summary>
+        public const string ReleaseApiPath =
+            "/repos/" + RepoOwner + "/" + RepoName + "/releases/latest";
+        public const string OfficialReleaseApiUrl = "https://api.github.com" + ReleaseApiPath;
+        /// <summary>已验证可用的 gh-proxy REST 镜像（同一官方 API 的只读转发）。</summary>
+        public const string VerifiedMirrorPrefix = "https://gh-proxy.com/";
+        public const string VerifiedMirrorReleaseApiUrl = VerifiedMirrorPrefix + OfficialReleaseApiUrl;
+
+        public static string ReleasePageBase
+        {
+            get
+            {
+                return "https://github.com/" + RepoOwner + "/" + RepoName + "/releases/tag/";
+            }
+        }
 
         public static string OfficialManifestUrl
         {
@@ -257,6 +280,15 @@ namespace KeyInsight.Update.Routing
             _statePath = statePath;
             AddBootstrapRoutes();
             LoadHealth();
+        }
+
+        /// <summary>
+        /// 测试用空目录（不联网、不写入健康文件）。生产代码使用公开构造函数。
+        /// </summary>
+        internal RouteCatalog(bool includeBootstrapRoutes)
+        {
+            _statePath = null;
+            if (includeBootstrapRoutes) AddBootstrapRoutes();
         }
 
         private void AddBootstrapRoutes()
@@ -309,15 +341,8 @@ namespace KeyInsight.Update.Routing
         /// <summary>追加用户配置的镜像路线（仍须 HTTPS + allowlist + 清单验签）。</summary>
         public bool AddRoute(string name, string manifestUrl, string assetBaseUrl)
         {
-            Uri u;
-            if (string.IsNullOrEmpty(manifestUrl) || !Uri.TryCreate(manifestUrl, UriKind.Absolute, out u)
-                || u.Scheme != Uri.UriSchemeHttps || !IsHostAllowed(u.Host)) return false;
-            if (!string.IsNullOrEmpty(assetBaseUrl))
-            {
-                Uri a;
-                if (!Uri.TryCreate(assetBaseUrl, UriKind.Absolute, out a)
-                    || a.Scheme != Uri.UriSchemeHttps || !IsHostAllowed(a.Host)) return false;
-            }
+            if (!IsAllowedUrl(manifestUrl)) return false;
+            if (!string.IsNullOrEmpty(assetBaseUrl) && !IsAllowedUrl(assetBaseUrl)) return false;
             _routes.Add(new RouteEndpoint { Name = name, ManifestUrl = manifestUrl, AssetBaseUrl = assetBaseUrl, Kind = RouteKind.Both });
             return true;
         }
@@ -331,6 +356,41 @@ namespace KeyInsight.Update.Routing
                 if (h == AllowedHosts[i]) return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// 初始 URL 与每一跳重定向都必须满足 HTTPS + allowlist；禁止 userinfo/非默认端口。
+        /// </summary>
+        public static bool IsAllowedUrl(string url)
+        {
+            Uri u;
+            if (string.IsNullOrEmpty(url) || !Uri.TryCreate(url, UriKind.Absolute, out u)) return false;
+            if (u.Scheme != Uri.UriSchemeHttps) return false;
+            if (!string.IsNullOrEmpty(u.UserInfo)) return false;
+            if (u.Port != 443) return false;
+            return IsHostAllowed(u.Host);
+        }
+
+        /// <summary>
+        /// 仅使用本地构造的官方 release 页面；不采用 API 返回的 html_url。
+        /// 3.4.0 与 3.4.0.0 规范化为同一个 tag。
+        /// </summary>
+        public static string CanonicalReleaseUrl(Version version)
+        {
+            if (version == null) return "";
+            Version v = NormalizeVersion(version);
+            string text = v.Revision > 0 ? v.ToString(4) : v.ToString(3);
+            return ReleasePageBase + "v" + text;
+        }
+
+        internal static Version NormalizeVersion(Version version)
+        {
+            if (version == null) return null;
+            int major = Math.Max(0, version.Major);
+            int minor = version.Minor < 0 ? 0 : version.Minor;
+            int build = version.Build < 0 ? 0 : version.Build;
+            int revision = version.Revision < 0 ? 0 : version.Revision;
+            return new Version(major, minor, build, revision);
         }
 
         public RouteHealth HealthOf(RouteEndpoint route)

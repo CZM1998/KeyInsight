@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$ManifestPath,
     [Parameter(Mandatory=$true)][string]$PrivateKeyPath,
     [string]$OutputPath = ""
@@ -9,36 +9,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$code = @"
-using System;
-using System.Security.Cryptography;
-using System.IO;
-public static class ManifestSigner {
-    public static string Sign(string manifestPath, string keyPath) {
-        byte[] data = File.ReadAllBytes(manifestPath);
-        using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(3072)) {
-            rsa.PersistKeyInCsp = false;
-            rsa.FromXmlString(File.ReadAllText(keyPath));
-            byte[] sig = rsa.SignData(data, new SHA256CryptoServiceProvider());
-            return Convert.ToBase64String(sig);
-        }
-    }
+$manifest = (Resolve-Path -LiteralPath $ManifestPath).ProviderPath
+$key = (Resolve-Path -LiteralPath $PrivateKeyPath).ProviderPath
+$rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider(3072)
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $rsa.PersistKeyInCsp = $false
+    $rsa.FromXmlString([IO.File]::ReadAllText($key))
+    $signature = $rsa.SignData([IO.File]::ReadAllBytes($manifest), $sha256)
+    if ([string]::IsNullOrEmpty($OutputPath)) { $OutputPath = $ManifestPath + ".sig" }
+    $output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+    [IO.File]::WriteAllText($output, [Convert]::ToBase64String($signature) + [Environment]::NewLine)
+    Write-Host "manifest signature written to $OutputPath"
 }
-"@
-
-$tmpDir = Join-Path $env:TEMP ("KeyInsightSign_" + [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-$csPath = Join-Path $tmpDir "signer.cs"
-$exePath = Join-Path $tmpDir "signer.exe"
-[System.IO.File]::WriteAllText($csPath, $code)
-
-$csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $csc -nologo -out:$exePath $csPath
-if ($LASTEXITCODE -ne 0) { throw "signer compile failed" }
-
-$sig = & $exePath $ManifestPath $PrivateKeyPath
-if ($LASTEXITCODE -ne 0) { throw "signing failed" }
-
-if ($OutputPath -eq "") { $OutputPath = $ManifestPath + ".sig" }
-[System.IO.File]::WriteAllText($OutputPath, $sig + "`n")
-Write-Host "manifest signature written to $OutputPath"
+finally {
+    $sha256.Dispose()
+    $rsa.Dispose()
+}

@@ -53,7 +53,7 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force stage | Out-Null
-          Copy-Item KeyInsight.exe, README.md, LICENSE stage
+          Copy-Item KeyInsight.exe, KeyInsight.Updater.exe, README.md, LICENSE stage
           Compress-Archive -Path stage\* `
             -DestinationPath "KeyInsight-${{ steps.version.outputs.value }}-portable.zip" -Force
 
@@ -85,11 +85,14 @@ jobs:
           New-Item -ItemType Directory -Force $keyDir | Out-Null
           $keyPath = Join-Path $keyDir "update-private-key.xml"
           [System.IO.File]::WriteAllText($keyPath, $env:UPDATE_SIGNING_KEY_XML)
-          .\tools\release-manifest.ps1 -Version ${{ steps.version.outputs.value }} `
-            -SetupPath "dist\KeyInsight-Setup-${{ steps.version.outputs.value }}.exe" `
-            -PortablePath "KeyInsight-${{ steps.version.outputs.value }}-portable.zip" `
-            -PrivateKeyPath $keyPath -OutputDir dist
-          Remove-Item $keyPath -Force
+          try {
+            .\tools\release-manifest.ps1 -Version ${{ steps.version.outputs.value }} `
+              -SetupPath "dist\KeyInsight-Setup-${{ steps.version.outputs.value }}.exe" `
+              -PortablePath "KeyInsight-${{ steps.version.outputs.value }}-portable.zip" `
+              -PrivateKeyPath $keyPath -OutputDir dist
+          } finally {
+            Remove-Item -LiteralPath $keyPath -Force
+          }
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

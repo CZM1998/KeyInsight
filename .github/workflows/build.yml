@@ -33,5 +33,6 @@ jobs:
           name: KeyInsight-build
           path: |
             KeyInsight.exe
+            KeyInsight.Updater.exe
             README.md
             LICENSE

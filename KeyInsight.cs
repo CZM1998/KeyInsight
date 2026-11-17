@@ -12,7 +12,7 @@ using KeyInsight.Core.Telemetry;
 using KeyInsight.Hook;
 using KeyInsight.Stats;
 using KeyInsight.UI;
-using KeyInsight.Update;
+using KeyInsight.Update.Orchestration;
 
 namespace KeyInsight
 {
@@ -144,20 +144,7 @@ namespace KeyInsight
                 DebounceHook hook = new DebounceHook(cfg, sink);
                 MouseHook mouseHook = new MouseHook(cfg, sink);
                 HookSupervisor supervisor = new HookSupervisor(hook, mouseHook);
-                supervisor.StartAll();
-
-                // PR-6：更新后健康心跳——钩子成功安装即写入 nonce，独立 updater 据此判定回滚/成功
-                if (healthNonce.Length > 0)
-                {
-                    try
-                    {
-                        string healthDir = Path.Combine(dataDir, "v2");
-                        if (!Directory.Exists(healthDir)) Directory.CreateDirectory(healthDir);
-                        File.WriteAllText(Path.Combine(healthDir, "health.json"),
-                            "{\"nonce\":\"" + healthNonce.Replace("\"", "") + "\",\"utcTicks\":" + DateTime.UtcNow.Ticks + "}");
-                    }
-                    catch { }
-                }
+                bool hooksInstalled = supervisor.StartAll();
                 RawInputTracker rawInput = new RawInputTracker(Path.Combine(dataDir, "v2"));
                 rawInput.Start();
 
@@ -179,6 +166,19 @@ namespace KeyInsight
                         keyPolicies, rawInput, supervisor, sink, orchestrator, routeCatalog,
                         deviceCenter))
                     {
+                        Guid updateNonce;
+                        if (hooksInstalled && Guid.TryParseExact(healthNonce, "N", out updateNonce))
+                        {
+                            try
+                            {
+                                string healthDir = Path.Combine(dataDir, "v2");
+                                Directory.CreateDirectory(healthDir);
+                                File.WriteAllText(Path.Combine(healthDir, "health.json"),
+                                    "{\"nonce\":\"" + updateNonce.ToString("N") + "\",\"utcTicks\":" + DateTime.UtcNow.Ticks + "}");
+                            }
+                            catch (Exception ex) { LogError(ex); }
+                        }
+                        if (Array.IndexOf(args, "--show-dashboard") >= 0) tray.ShowDashboard();
                         Application.Run(tray);
                     }
                 }
@@ -235,9 +235,10 @@ namespace KeyInsight
         private readonly System.Windows.Forms.Timer _timer;
         private readonly SynchronizationContext _sync;
         private DashboardForm _form;
-        private UpdateInfo _pendingUpdate;
         private bool _pendingUpdateAvailable;   // 检查发现新版本（托盘气泡点击 → 下载安装）
-        private string _pendingUpdateVersion;
+        private string _pendingReleaseUrl;
+        private readonly ToolStripMenuItem _updateItem;
+        private int _updateOperation;
         private bool _updateBusy;
         private string _lastUpdateCheckResult;
 
@@ -258,7 +259,7 @@ namespace KeyInsight
             _updater = updater;
             _routeCatalog = routeCatalog;
             _deviceCenter = deviceCenter;
-            _sync = SynchronizationContext.Current;
+            _sync = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
 
             ContextMenuStrip menu = new ContextMenuStrip();
 
@@ -327,9 +328,9 @@ namespace KeyInsight
             };
             menu.Items.Add(reinstall);
 
-            ToolStripMenuItem updateItem = new ToolStripMenuItem("检查更新");
-            updateItem.Click += delegate { BeginUpdateCheck(true); };
-            menu.Items.Add(updateItem);
+            _updateItem = new ToolStripMenuItem("检查更新");
+            _updateItem.Click += delegate { BeginUpdateCheck(true); };
+            menu.Items.Add(_updateItem);
 
             menu.Items.Add(new ToolStripSeparator());
             ToolStripMenuItem exit = new ToolStripMenuItem("退出");
@@ -345,7 +346,12 @@ namespace KeyInsight
             _icon.Text = "KeyInsight";
             _icon.Visible = true;
             _icon.DoubleClick += delegate { ShowDashboard(); };
-            _icon.BalloonTipClicked += delegate { if (_pendingUpdateAvailable) InstallUpdate(); };
+            _icon.BalloonTipClicked += delegate
+            {
+                if (_updateBusy) return;
+                if (_pendingUpdateAvailable) InstallUpdate();
+                else if (!string.IsNullOrEmpty(_pendingReleaseUrl)) OpenReleasePage(_pendingReleaseUrl);
+            };
 
             _timer = new System.Windows.Forms.Timer();
             _timer.Interval = 2000;
@@ -382,13 +388,14 @@ namespace KeyInsight
             return SystemIcons.Application;
         }
 
-        private void ShowDashboard()
+        internal void ShowDashboard()
         {
             if (_form == null || _form.IsDisposed)
             {
                 _form = new DashboardForm(_stats, _cfg, _hook, _mouseHook,
                     delegate { BeginUpdateCheck(true); }, _keyPolicies, _rawInput, _supervisor,
                     _sink, _updater, _routeCatalog, _deviceCenter);
+                _form.OnUpdateStateChanged(_updateBusy, _lastUpdateCheckResult, _pendingReleaseUrl);
             }
             _form.Show();
             if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;
@@ -452,201 +459,186 @@ namespace KeyInsight
         private void BeginUpdateCheck(bool manual)
         {
             if (_updateBusy) return;
-            _updateBusy = true;
-            _lastUpdateCheckResult = "正在检查更新…";
-            PostUpdateStateChanged();
+            _pendingUpdateAvailable = false;
+            _pendingReleaseUrl = null;
+            if (_updater == null)
+            {
+                _lastUpdateCheckResult = "检查失败：更新服务未初始化";
+                RefreshUpdateState();
+                return;
+            }
+
+            int operation = StartUpdateOperation("正在连接更新线路");
+            int cohort = _cfg.UpdateCohort;
             ThreadPool.QueueUserWorkItem(delegate
             {
+                UpdateOrchestrator.CheckResult result;
                 try
                 {
-                    if (_updater != null)
-                    {
-                        // 复审方案 PR-3/PR-4：固定名 Release 清单（官方 + 公共代理）hedged 获取，
-                        // 验签成功才可信；不再依赖 api.github.com。
-                        // §2.2：只有验签+解析成功才写 LastUpdateCheckTicks，失败不清空 24h 自动重试窗口。
-                        KeyInsight.Update.Orchestration.UpdateOrchestrator.CheckResult r =
-                            _updater.CheckOnly(new Version(AppInfo.Version), "stable", _cfg.UpdateCohort);
-                        _updater.SaveRouteHealth();
-                        if (!r.Ok)
-                        {
-                            _lastUpdateCheckResult = "检查失败：" +
-                                (string.IsNullOrEmpty(r.ErrorCategory) ? r.Error
-                                    : r.ErrorCategory + " · " + r.Error);
-                            if (manual)
-                            {
-                                PostBalloon("检查更新失败", r.Error, ToolTipIcon.Error);
-                            }
-                            return;
-                        }
-                        _cfg.LastUpdateCheckTicks = DateTime.UtcNow.Ticks;
-                        _cfg.Save();
-
-                        string via = string.IsNullOrEmpty(r.RouteName) ? "官方源" : r.RouteName;
-                        if (r.UpdateAvailable)
-                        {
-                            _pendingUpdateAvailable = true;
-                            _pendingUpdateVersion = r.VersionText;
-                            _lastUpdateCheckResult = "发现新版本 " + r.VersionText + "（经由 " + via + "）";
-                            PostBalloon("发现新版本 " + r.VersionText,
-                                manual ? "点击这里下载并安装" : "点击托盘气泡或右键检查更新",
-                                ToolTipIcon.Info);
-                            if (manual && _sync != null)
-                            {
-                                _sync.Post(delegate { InstallUpdate(); }, null);
-                            }
-                        }
-                        else
-                        {
-                            _pendingUpdateAvailable = false;
-                            _lastUpdateCheckResult = "已是最新（最新发布 " + r.VersionText + " · 经由 " + via + "）";
-                            if (manual)
-                            {
-                                PostBalloon("已是最新版本",
-                                    "当前 v" + UpdateService.CurrentVersion + "（最新发布 " + r.VersionText + "）",
-                                    ToolTipIcon.Info);
-                            }
-                        }
-                        return;
-                    }
-
-                    // 兜底：编排器不可用时走旧通道（保留以隔离回归）
-                    UpdateInfo info = UpdateService.Check();
-                    if (info != null)
-                    {
-                        _cfg.LastUpdateCheckTicks = DateTime.UtcNow.Ticks;
-                        _cfg.Save();
-                        if (info.UpToDate)
-                        {
-                            _lastUpdateCheckResult = "已是最新（最新发布 " + info.Tag + "）";
-                            if (manual)
-                            {
-                                PostBalloon("已是最新版本",
-                                    "当前 v" + UpdateService.CurrentVersion + "（最新发布 " + info.Tag + "）",
-                                    ToolTipIcon.Info);
-                            }
-                        }
-                        else
-                        {
-                            _pendingUpdate = info;
-                            _pendingUpdateAvailable = true;
-                            _lastUpdateCheckResult = "发现新版本 v" + info.Version;
-                            PostBalloon("发现新版本 v" + info.Version,
-                                manual ? "点击这里下载并安装" : "点击托盘气泡或右键检查更新",
-                                ToolTipIcon.Info);
-                            if (manual && _sync != null)
-                            {
-                                _sync.Post(delegate { InstallUpdate(); }, null);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        _lastUpdateCheckResult = "检查失败：发布信息不可用";
-                        if (manual)
-                        {
-                            PostBalloon("检查更新失败", "无法解析发布信息", ToolTipIcon.Error);
-                        }
-                    }
+                    result = _updater.CheckOnly(new Version(AppInfo.Version), "stable", cohort,
+                        detail => ReportUpdateProgress(operation, detail));
+                    _updater.SaveRouteHealth();
                 }
                 catch (Exception ex)
                 {
-                    _lastUpdateCheckResult = "检查失败：" + ex.Message;
-                    if (manual) PostBalloon("检查更新失败", ex.Message, ToolTipIcon.Error);
+                    result = new UpdateOrchestrator.CheckResult { Error = ex.Message };
                 }
-                finally
-                {
-                    _updateBusy = false;
-                    PostUpdateStateChanged();
-                }
+
+                _sync.Post(delegate { CompleteUpdateCheck(operation, manual, result); }, null);
             });
+        }
+
+        private void CompleteUpdateCheck(int operation, bool manual, UpdateOrchestrator.CheckResult result)
+        {
+            if (operation != _updateOperation) return;
+            _updateBusy = false;
+
+            if (!result.Ok || (!result.UpToDate && !result.UpdateAvailable))
+            {
+                string reason = string.IsNullOrEmpty(result.ErrorCategory) ? result.Error
+                    : result.ErrorCategory + " · " + result.Error;
+                _lastUpdateCheckResult = "检查失败：" + reason;
+                RefreshUpdateState();
+                if (manual) PostBalloon("检查更新失败", reason, ToolTipIcon.Warning);
+                return;
+            }
+
+            _cfg.LastUpdateCheckTicks = DateTime.UtcNow.Ticks;
+            _cfg.Save();
+            string source = string.IsNullOrEmpty(result.RouteName) ? "" : " · " + result.RouteName;
+            string version = result.VersionText.TrimStart('v', 'V');
+            if (result.UpToDate)
+            {
+                Version published;
+                bool newerLocal = Version.TryParse(version, out published) &&
+                    new Version(AppInfo.Version) > published;
+                _lastUpdateCheckResult = (newerLocal ? "本地版本较新" : "已是最新") +
+                    " · 最新发布 v" + version + source + (result.MetadataOnly ? " · 发布信息" : "");
+                RefreshUpdateState();
+                if (manual) PostBalloon("检查更新完成", _lastUpdateCheckResult, ToolTipIcon.Info);
+                return;
+            }
+
+            _pendingUpdateAvailable = !result.MetadataOnly;
+            _pendingReleaseUrl = result.MetadataOnly ? result.ReleaseUrl : null;
+            _lastUpdateCheckResult = "发现新版本 v" + version + source +
+                (result.MetadataOnly ? " · 请从发布页下载" : " · 清单验签通过");
+            RefreshUpdateState();
+            if (manual && _pendingUpdateAvailable)
+            {
+                InstallUpdate();
+                return;
+            }
+
+            PostBalloon("发现新版本 v" + version,
+                result.MetadataOnly ? "点击通知打开官方发布页" : "点击通知下载更新", ToolTipIcon.Info);
+        }
+
+        private int StartUpdateOperation(string text)
+        {
+            int operation = ++_updateOperation;
+            _updateBusy = true;
+            _lastUpdateCheckResult = text;
+            RefreshUpdateState();
+            return operation;
+        }
+
+        private void ReportUpdateProgress(int operation, string text)
+        {
+            _sync.Post(delegate
+            {
+                if (operation != _updateOperation || !_updateBusy) return;
+                _lastUpdateCheckResult = text;
+                RefreshUpdateState();
+            }, null);
+        }
+
+        private static void OpenReleasePage(string url)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Error(null, "打开发布页失败", ex.Message);
+            }
         }
 
         private void InstallUpdate()
         {
-            if (_updateBusy) return;
+            if (_updateBusy || !_pendingUpdateAvailable || _updater == null) return;
 
-            // 编排链路（复审方案 PR-4/PR-5）：多线路下载 + Range 续传 + 整文件 SHA-256，
-            // portable 安装形态下载 portable zip 原样升级，安装失败由 Updater 回滚。
-            if (_updater != null)
-            {
-                _updateBusy = true;
-                PostBalloon("正在下载更新", "自动选择最快线路下载", ToolTipIcon.Info);
-                ThreadPool.QueueUserWorkItem(delegate
-                {
-                    try
-                    {
-                        bool setupInstall = File.Exists(
-                            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
-                        string assetId = setupInstall ? "windows-x64-setup" : "windows-x64-portable";
-                        bool ready = _updater.CheckAndDownload(
-                            new Version(AppInfo.Version), "stable", _cfg.UpdateCohort, assetId);
-                        _updater.SaveRouteHealth();
-                        if (!ready)
-                        {
-                            if (_updater.State != KeyInsight.Update.Orchestration.UpdateState.UpToDate)
-                            {
-                                PostBalloon("更新下载失败",
-                                    _updater.LastError ?? _updater.LastErrorCategory ?? "未知错误",
-                                    ToolTipIcon.Error);
-                                _lastUpdateCheckResult = "更新下载失败：" +
-                                    (_updater.LastErrorCategory ?? "未知");
-                            }
-                            return;
-                        }
-                        string path = _updater.ReadyInstallerPath;
-                        if (_sync != null)
-                        {
-                            _sync.Post(delegate { PromptInstall(path, null); }, null);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        PostBalloon("更新下载失败", ex.Message, ToolTipIcon.Error);
-                    }
-                    finally
-                    {
-                        _updateBusy = false;
-                    }
-                });
-                return;
-            }
-
-            // 兜底：旧下载通道
-            UpdateInfo info = _pendingUpdate;
-            if (info == null) return;
-            _updateBusy = true;
-            PostBalloon("正在下载更新", "v" + info.Version, ToolTipIcon.Info);
-
+            int operation = StartUpdateOperation("正在准备下载");
+            int cohort = _cfg.UpdateCohort;
             ThreadPool.QueueUserWorkItem(delegate
             {
+                string path = null;
+                string detail = null;
+                long lastProgress = 0;
+                Action<UpdateState, string> stateChanged = delegate(UpdateState state, string stage)
+                {
+                    if (state == UpdateState.Downloading) ReportUpdateProgress(operation, "正在下载更新");
+                    else if (state == UpdateState.VerifyingArtifact) ReportUpdateProgress(operation, "正在校验安装包");
+                };
+                Action<long, long> downloading = delegate(long done, long total)
+                {
+                    long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (done < total && now - lastProgress < System.Diagnostics.Stopwatch.Frequency / 4) return;
+                    lastProgress = now;
+                    string amount = (done / 1048576.0).ToString("0.0") + " MB";
+                    if (total > 0)
+                    {
+                        int percent = (int)Math.Min(100, done * 100.0 / total);
+                        amount += " / " + (total / 1048576.0).ToString("0.0") + " MB · " + percent + "%";
+                    }
+                    ReportUpdateProgress(operation, "正在下载 · " + amount);
+                };
+
+                _updater.StateChanged += stateChanged;
+                _updater.DownloadProgress += downloading;
                 try
                 {
-                    string path = UpdateService.Download(info);
-                    if (_sync != null) _sync.Post(delegate { PromptInstall(path, info); }, null);
+                    bool setup = File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
+                    string assetId = setup ? "windows-x64-setup" : "windows-x64-portable";
+                    if (_updater.DownloadVerified(new Version(AppInfo.Version), "stable", cohort, assetId))
+                        path = _updater.ReadyInstallerPath;
+                    else
+                        detail = _updater.LastError ?? _updater.LastErrorCategory ?? "当前版本没有可下载安装的更新";
+                    _updater.SaveRouteHealth();
                 }
                 catch (Exception ex)
                 {
-                    PostBalloon("更新下载失败", ex.Message, ToolTipIcon.Error);
+                    detail = ex.Message;
                 }
                 finally
                 {
-                    _updateBusy = false;
+                    _updater.StateChanged -= stateChanged;
+                    _updater.DownloadProgress -= downloading;
                 }
+
+                _sync.Post(delegate
+                {
+                    if (operation != _updateOperation) return;
+                    _updateBusy = false;
+                    _lastUpdateCheckResult = path == null ? "更新下载失败：" + detail : "安装包已下载并通过校验";
+                    RefreshUpdateState();
+                    if (path == null) PostBalloon("更新下载失败", detail, ToolTipIcon.Error);
+                    else PromptInstall(path);
+                }, null);
             });
         }
 
-        private void PromptInstall(string path, UpdateInfo info)
+        private void PromptInstall(string path)
         {
-            string verText = info != null ? ("新版本 v" + info.Version + " 已下载。")
-                : "新版本安装包已下载并通过整文件 SHA-256 校验。";
             bool go = Dialogs.Confirm(null, "KeyInsight 更新",
-                verText + "\n\n是否立即安装？安装前会自动备份当前版本，完成后重新启动；安装失败自动回滚。");
+                "新版本安装包已下载并通过整文件 SHA-256 校验。"
+                + "\n\n是否立即安装？安装完成后重新启动。");
             if (!go) return;
 
             try
             {
-                if (info != null) UpdateService.RunInstaller(path);
-                else LaunchUpdaterHelper(path);
+                LaunchUpdaterHelper(path);
                 ExitApp();
             }
             catch (Exception ex)
@@ -658,42 +650,38 @@ namespace KeyInsight
         /// <summary>经由独立 KeyInsight.Updater.exe 安装（备份 → 应用 → 健康检查 → 失败回滚）。</summary>
         private void LaunchUpdaterHelper(string installerPath)
         {
-            string updaterExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "KeyInsight.Updater.exe");
+            string target = Path.GetDirectoryName(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "KeyInsight.exe"));
+            string updaterExe = Path.Combine(target, "KeyInsight.Updater.exe");
             if (!File.Exists(updaterExe))
             {
                 throw new FileNotFoundException("缺少 KeyInsight.Updater.exe，无法安全安装", updaterExe);
             }
-            bool setupInstall = File.Exists(
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unins000.exe"));
-            string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
-
-            System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
-            psi.FileName = updaterExe;
+            bool setupInstall = File.Exists(Path.Combine(target, "unins000.exe"));
+            string healthPath = Path.Combine(DataPathResolver.ResolveDataRoot(target), "v2", "health.json");
+            string helperDir = Path.Combine(Path.GetTempPath(), "KeyInsight-updater-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(helperDir);
+            string helper = Path.Combine(helperDir, "KeyInsight.Updater.exe");
+            File.Copy(updaterExe, helper);
+            string quotedTarget = target.EndsWith("\\", StringComparison.Ordinal) ? target + "\\" : target;
+            System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo(helper);
             psi.Arguments = "--wait-pid " + System.Diagnostics.Process.GetCurrentProcess().Id +
                 " --installer \"" + installerPath + "\"" +
                 " --package " + (setupInstall ? "setup" : "portable") +
-                " --target \"" + AppDomain.CurrentDomain.BaseDirectory + "\"" +
+                " --target \"" + quotedTarget + "\"" +
                 " --health-nonce " + Guid.NewGuid().ToString("N") +
+                " --health-path \"" + healthPath + "\"" +
                 " --health-timeout 60";
-            psi.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+            psi.WorkingDirectory = helperDir;
             psi.UseShellExecute = true;
             System.Diagnostics.Process.Start(psi);
         }
 
-        private void PostUpdateStateChanged()
+        private void RefreshUpdateState()
         {
-            if (_sync == null) return;
-            _sync.Post(delegate
-            {
-                try
-                {
-                    if (_form != null && !_form.IsDisposed)
-                    {
-                        _form.OnUpdateStateChanged(_updateBusy, _lastUpdateCheckResult);
-                    }
-                }
-                catch { }
-            }, null);
+            _updateItem.Enabled = !_updateBusy;
+            _updateItem.Text = _updateBusy ? "更新进行中…" : "检查更新";
+            if (_form != null && !_form.IsDisposed)
+                _form.OnUpdateStateChanged(_updateBusy, _lastUpdateCheckResult, _pendingReleaseUrl);
         }
 
         private void PostBalloon(string title, string text, ToolTipIcon icon)
@@ -715,6 +703,7 @@ namespace KeyInsight
             _hook.Dispose();
             _mouseHook.Dispose();
             if (_rawInput != null) _rawInput.Dispose();
+            if (_sink != null) _sink.Flush(500);
             _stats.Dispose();
             ForegroundTracker.Stop();
             _icon.Dispose();

@@ -41,6 +41,7 @@ namespace KeyInsight.UI
         bool UpdateCheckBusy { get; }
         /// <summary>最近一次更新检查结果摘要（面板反馈行）；null = 尚未检查。</summary>
         string LastUpdateCheckResult { get; }
+        string UpdateReleaseUrl { get; }
         void RefreshSnapshot();
     }
 }

@@ -277,15 +277,17 @@ namespace KeyInsight.UI
 
         public bool UpdateCheckBusy { get; private set; }
         public string LastUpdateCheckResult { get; private set; }
+        public string UpdateReleaseUrl { get; private set; }
 
         /// <summary>托盘回调：更新检查状态变化（busy/结果文本），转发给设置页重绘。</summary>
-        public void OnUpdateStateChanged(bool busy, string result)
+        public void OnUpdateStateChanged(bool busy, string result, string releaseUrl)
         {
             UpdateCheckBusy = busy;
             LastUpdateCheckResult = result;
+            UpdateReleaseUrl = releaseUrl;
             for (int i = 0; i < _pages.Length; i++)
             {
-                _pages[i].Invalidate();
+                if (_pages[i] is SettingsPage) _pages[i].Invalidate();
             }
         }
 

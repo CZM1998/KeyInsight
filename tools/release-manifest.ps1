@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$Version,
     [string]$SetupPath = "",
     [string]$PortablePath = "",
@@ -23,50 +23,13 @@ if (-not $PrivateKeyPath) {
 }
 if (-not (Test-Path $PrivateKeyPath)) { throw "private key not found: $PrivateKeyPath" }
 
-$code = @"
-using System;
-using System.Security.Cryptography;
-using System.IO;
-using System.Text;
-public static class Tools {
-    public static string Sha256(string path) {
-        using (SHA256 sha = SHA256.Create())
-        using (FileStream fs = File.OpenRead(path)) {
-            byte[] h = sha.ComputeHash(fs);
-            StringBuilder sb = new StringBuilder(h.Length * 2);
-            for (int i = 0; i < h.Length; i++) sb.Append(h[i].ToString("x2"));
-            return sb.ToString();
-        }
-    }
-    public static string Sign(string manifestPath, string keyPath) {
-        byte[] data = File.ReadAllBytes(manifestPath);
-        using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(3072)) {
-            rsa.PersistKeyInCsp = false;
-            rsa.FromXmlString(File.ReadAllText(keyPath));
-            return Convert.ToBase64String(rsa.SignData(data, new SHA256CryptoServiceProvider()));
-        }
-    }
-}
-"@
-
-$tmpDir = Join-Path $env:TEMP ("KISign_" + [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-$csPath = Join-Path $tmpDir "tools.cs"
-$exePath = Join-Path $tmpDir "tools.exe"
-[System.IO.File]::WriteAllText($csPath, $code)
-& $csc 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' -nologo -out:$exePath $csPath 2>$null
-if ($LASTEXITCODE -ne 0) {
-    $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    & $csc -nologo -out:$exePath $csPath
-    if ($LASTEXITCODE -ne 0) { throw "tools compile failed" }
-}
-
-$setupSha = & $exePath "sha" $SetupPath
-$portSha = & $exePath "sha" $PortablePath
+$setupSha = (Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$portSha = (Get-FileHash -LiteralPath $PortablePath -Algorithm SHA256).Hash.ToLowerInvariant()
 $setupSize = (Get-Item $SetupPath).Length
 $portSize = (Get-Item $PortablePath).Length
 
 $ghBase = "https://github.com/CZM1998/KeyInsight/releases/download/v$Version"
+$publishedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
 $manifest = @"
 {
@@ -74,7 +37,7 @@ $manifest = @"
   "product": "KeyInsight",
   "channel": "stable",
   "version": "$Version",
-  "publishedAt": "$(DateTime.UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))",
+  "publishedAt": "$publishedAt",
   "rolloutPercent": 100,
   "minUpgradeFrom": null,
   "revoked": [],
@@ -105,13 +68,11 @@ $manifest = @"
 "@
 
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
-$manifestPath = Join-Path $OutputDir $OutputName
+$manifestPath = Join-Path (Resolve-Path -LiteralPath $OutputDir).ProviderPath $OutputName
 [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
-$sig = & $exePath "sign" $manifestPath $PrivateKeyPath
 $manifestSigPath = $manifestPath + ".sig"
-[System.IO.File]::WriteAllText($manifestSigPath, $sig + "`n")
-
+& (Join-Path $PSScriptRoot "sign-manifest.ps1") -ManifestPath $manifestPath -PrivateKeyPath $PrivateKeyPath -OutputPath $manifestSigPath
 Write-Host "manifest: $manifestPath"
 Write-Host "signature: $manifestSigPath"
 Write-Host "setup sha256: $setupSha"
